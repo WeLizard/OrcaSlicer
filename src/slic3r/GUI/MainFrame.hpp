@@ -22,6 +22,7 @@
 #include "Auxiliary.hpp"
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
+#include "FilamentHubPanel.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"
@@ -223,6 +224,7 @@ public:
         tpCalibration   = 6,
         tpAuxiliary     = 7,
         toDebugTool     = 8,
+        tpFilamentHub   = 9,
     };
 
     //BBS: add slice&&print status update logic
@@ -378,6 +380,7 @@ public:
     ProjectPanel*         m_project{ nullptr };
 
     CalibrationPanel*     m_calibration{ nullptr };
+    FilamentHubPanel*     m_filamenthub_panel{ nullptr };
     WebViewPanel*         m_webview { nullptr };
     PrinterWebView*       m_printer_view{nullptr};
     wxLogWindow*          m_log_window { nullptr };

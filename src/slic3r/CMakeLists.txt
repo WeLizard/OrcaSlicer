@@ -62,6 +62,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Calibration.hpp
     GUI/CalibrationPanel.cpp
     GUI/CalibrationPanel.hpp
+    GUI/FilamentHubPanel.cpp
+    GUI/FilamentHubPanel.hpp
     GUI/CalibrationWizardCaliPage.cpp
     GUI/CalibrationWizardCaliPage.hpp
     GUI/CalibrationWizard.cpp

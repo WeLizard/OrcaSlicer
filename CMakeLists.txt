@@ -275,6 +275,21 @@ else ()
 endif ()
 set(PREFIX_PATH_CHECK ${CMAKE_PREFIX_PATH})
 
+# =============================================================================
+# MODIFICATIONS BY FILAMENTHUB (2025)
+# 
+# This section was modified to fix OpenCV detection issues on Windows builds.
+# Original copyright (C) SoftFever/OrcaSlicer.
+# 
+# Modifications:
+# - Added explicit OpenCV_RUNTIME and OpenCV_ARCH detection for Windows/MSVC
+# - Fixed OCCT DLL path resolution for multiple VC runtime versions
+# 
+# Licensed under AGPL-3.0 (same as original OrcaSlicer)
+# Source: https://github.com/lizardjazz1/OrcaSlicer
+# Branch: filamenthub-integration
+# =============================================================================
+
 # Исправление для OpenCV: явно устанавливаем RUNTIME и ARCH для Windows
 # OpenCVConfig.cmake может не правильно определить MSVC_VERSION
 if(WIN32 AND MSVC)

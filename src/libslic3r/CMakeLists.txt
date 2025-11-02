@@ -489,6 +489,22 @@ cmake_policy(PUSH)
 cmake_policy(SET CMP0011 NEW)
 find_package(CGAL REQUIRED)
 
+# =============================================================================
+# MODIFICATIONS BY FILAMENTHUB (2025)
+# 
+# This section was modified to fix OpenCV detection issues on Windows builds.
+# Original copyright (C) SoftFever/OrcaSlicer.
+# 
+# Modifications:
+# - Added explicit OpenCV_RUNTIME and OpenCV_ARCH detection
+# - Added manual OpenCV_DIR path resolution
+# - Added fallback to direct library search if find_package fails
+# 
+# Licensed under AGPL-3.0 (same as original OrcaSlicer)
+# Source: https://github.com/lizardjazz1/OrcaSlicer
+# Branch: filamenthub-integration
+# =============================================================================
+
 # Исправление для OpenCV: явно устанавливаем RUNTIME и ARCH, так как MSVC_VERSION может не определяться в OpenCVConfig.cmake
 if(NOT DEFINED OpenCV_RUNTIME)
     if(MSVC_VERSION MATCHES "^193[0-9]$")

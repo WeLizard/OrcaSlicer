@@ -43,24 +43,50 @@ This fork of OrcaSlicer includes modifications to integrate FilamentHub function
 
 ---
 
-## Planned Modifications (Future)
+## FilamentHub Integration (2025-01-XX)
 
-### FilamentHub Integration
+### 1. FilamentHub HTTP Client
 
-The following modifications are planned but not yet implemented:
+**Files Created:**
+- `src/slic3r/Utils/FilamentHubClient.cpp/.hpp`
 
-1. **FilamentHub Authentication**
-   - New file: `src/slic3r/GUI/FilamentHubAuth.cpp/.h`
-   - Authentication with FilamentHub API (similar to BambuLab integration)
+**Changes:**
+- HTTP client for FilamentHub REST API
+- Implements `test_connection()`, `login()`, `get_current_user()` methods
+- Uses existing `Http` class (libcurl-based) from OrcaSlicer
+- Default API URL: `http://localhost:8000` (configurable)
+- JWT token management (get/set/clear access_token)
 
-2. **FilamentHub Tab**
-   - New file: `src/slic3r/GUI/FilamentHubPanel.cpp/.h`
-   - New tab "FilamentHub" in main UI (next to Prepare, Preview, Printer, Project tabs)
+### 2. FilamentHub Tab
 
-3. **Profile Synchronization**
+**Files Created:**
+- `src/slic3r/GUI/FilamentHubPanel.cpp/.hpp`
+
+**Files Modified:**
+- `src/slic3r/GUI/MainFrame.hpp` - Added `tpFilamentHub` to `TabPosition` enum, added `m_filamenthub_panel` member
+- `src/slic3r/GUI/MainFrame.cpp` - Added FilamentHubPanel tab creation in `init_tabpanel()`
+
+**Changes:**
+- New tab "FilamentHub" in main UI (next to Calibration tab)
+- UI skeleton with:
+  - Status label (Connected/Not connected)
+  - Test Connection button
+  - Login/Logout buttons
+  - Placeholder content area
+- Integrated with FilamentHubClient for API communication
+
+### Planned Modifications (Future)
+
+3. **FilamentHub Authentication Dialog**
+   - Login dialog with email/username and password fields
+   - Store JWT token locally
+   - Auto-refresh token mechanism
+
+4. **Profile Synchronization**
    - Modify: `src/slic3r/GUI/FilamentProfileDialog.cpp` (or similar)
    - Add FilamentHub profiles to "Filament Profile" dropdown
    - Auto-sync user profiles from FilamentHub
+   - Import/export functionality
 
 ---
 

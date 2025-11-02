@@ -275,6 +275,29 @@ else ()
 endif ()
 set(PREFIX_PATH_CHECK ${CMAKE_PREFIX_PATH})
 
+# Исправление для OpenCV: явно устанавливаем RUNTIME и ARCH для Windows
+# OpenCVConfig.cmake может не правильно определить MSVC_VERSION
+if(WIN32 AND MSVC)
+    if(NOT DEFINED OpenCV_RUNTIME)
+        if(MSVC_VERSION MATCHES "^193[0-9]$")
+            set(OpenCV_RUNTIME vc17 CACHE STRING "OpenCV runtime version" FORCE)
+        elseif(MSVC_VERSION MATCHES "^192[0-9]$")
+            set(OpenCV_RUNTIME vc16 CACHE STRING "OpenCV runtime version" FORCE)
+        elseif(MSVC_VERSION MATCHES "^191[0-9]$")
+            set(OpenCV_RUNTIME vc15 CACHE STRING "OpenCV runtime version" FORCE)
+        elseif(MSVC_VERSION EQUAL 1900)
+            set(OpenCV_RUNTIME vc14 CACHE STRING "OpenCV runtime version" FORCE)
+        endif()
+    endif()
+    if(NOT DEFINED OpenCV_ARCH)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|x86_64.*|AMD64.*" OR CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
+            set(OpenCV_ARCH x64 CACHE STRING "OpenCV architecture" FORCE)
+        else()
+            set(OpenCV_ARCH x86 CACHE STRING "OpenCV architecture" FORCE)
+        endif()
+    endif()
+endif()
+
 # the CMAKE_PREFIX_PATH environment variable is separate from the CMAKE_PREFIX_PATH cache variable and provides additional paths to search for libraries.
 if (NOT "$ENV{CMAKE_PREFIX_PATH}" STREQUAL "")
     message(STATUS "CMAKE_PREFIX_PATH: $ENV{CMAKE_PREFIX_PATH} (from environment)")
@@ -805,34 +828,64 @@ function(orcaslicer_copy_dlls target config postfix output_dlls)
             ${TOP_LEVEL_PROJECT_DIR}/deps/WebView2/lib/win-${_arch}/WebView2Loader.dll
         DESTINATION ${_out_dir})
 
-    file(COPY ${CMAKE_PREFIX_PATH}/bin/occt/TKBO.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKBRep.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKCDF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKernel.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKG2d.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKG3d.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKGeomAlgo.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKGeomBase.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKHLR.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKLCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKMath.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKMesh.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKPrim.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKService.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKShHealing.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEP.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEP209.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEPAttr.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEPBase.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKTopAlgo.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKV3d.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKVCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKXCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKXDESTEP.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKXSBase.dll
-            ${CMAKE_PREFIX_PATH}/bin/freetype.dll
-         DESTINATION ${_out_dir})
+    # Определяем путь к DLL файлам OCCT (они могут быть в bin/occt/, win64/vc14/bin/, win64/vc17/bin/)
+    set(_occt_dll_path "")
+    
+    # Список возможных путей (в порядке приоритета)
+    set(_occt_candidate_paths
+        "${CMAKE_PREFIX_PATH}/bin/occt"
+        "${CMAKE_PREFIX_PATH}/win64/vc17/bin"
+        "${CMAKE_PREFIX_PATH}/win64/vc16/bin"
+        "${CMAKE_PREFIX_PATH}/win64/vc15/bin"
+        "${CMAKE_PREFIX_PATH}/win64/vc14/bin"
+    )
+    
+    # Находим первый существующий путь
+    foreach(_path IN LISTS _occt_candidate_paths)
+        if(EXISTS "${_path}/TKBO.dll")
+            set(_occt_dll_path "${_path}")
+            message(STATUS "Found OCCT DLLs at: ${_occt_dll_path}")
+            break()
+        endif()
+    endforeach()
+    
+    # Копируем DLL файлы OCCT только если они существуют
+    if(_occt_dll_path AND EXISTS "${_occt_dll_path}/TKBO.dll")
+        file(COPY ${_occt_dll_path}/TKBO.dll
+                ${_occt_dll_path}/TKBRep.dll
+                ${_occt_dll_path}/TKCAF.dll
+                ${_occt_dll_path}/TKCDF.dll
+                ${_occt_dll_path}/TKernel.dll
+                ${_occt_dll_path}/TKG2d.dll
+                ${_occt_dll_path}/TKG3d.dll
+                ${_occt_dll_path}/TKGeomAlgo.dll
+                ${_occt_dll_path}/TKGeomBase.dll
+                ${_occt_dll_path}/TKHLR.dll
+                ${_occt_dll_path}/TKLCAF.dll
+                ${_occt_dll_path}/TKMath.dll
+                ${_occt_dll_path}/TKMesh.dll
+                ${_occt_dll_path}/TKPrim.dll
+                ${_occt_dll_path}/TKService.dll
+                ${_occt_dll_path}/TKShHealing.dll
+                ${_occt_dll_path}/TKSTEP.dll
+                ${_occt_dll_path}/TKSTEP209.dll
+                ${_occt_dll_path}/TKSTEPAttr.dll
+                ${_occt_dll_path}/TKSTEPBase.dll
+                ${_occt_dll_path}/TKTopAlgo.dll
+                ${_occt_dll_path}/TKV3d.dll
+                ${_occt_dll_path}/TKVCAF.dll
+                ${_occt_dll_path}/TKXCAF.dll
+                ${_occt_dll_path}/TKXDESTEP.dll
+                ${_occt_dll_path}/TKXSBase.dll
+             DESTINATION ${_out_dir})
+    else()
+        message(WARNING "OCCT DLL files not found in ${_occt_dll_path}, skipping OCCT DLL copy")
+    endif()
+    
+    # Копируем freetype.dll если он существует
+    if(EXISTS "${CMAKE_PREFIX_PATH}/bin/freetype.dll")
+        file(COPY ${CMAKE_PREFIX_PATH}/bin/freetype.dll DESTINATION ${_out_dir})
+    endif()
 
     set(${output_dlls}
         ${_out_dir}/libgmp-10.dll

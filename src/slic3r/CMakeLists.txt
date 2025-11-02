@@ -610,6 +610,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/SerialMessageType.hpp
     Utils/SimplyPrint.cpp
     Utils/SimplyPrint.hpp
+    Utils/FilamentHubClient.cpp
+    Utils/FilamentHubClient.hpp
     Utils/TCPConsole.cpp
     Utils/TCPConsole.hpp
     Utils/UndoRedo.cpp

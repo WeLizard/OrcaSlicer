@@ -60,8 +60,8 @@ bool FilamentHubClient::test_connection(
 ) const
 {
     try {
-        // Try /api/v1/health first, fallback to /api/v1/ if not available
-        std::string url = s_api_base_url + "/api/v1/health";
+        // Try /health first (simple health check endpoint)
+        std::string url = s_api_base_url + "/health";
         
         Http::get(url)
             .header("Content-Type", "application/json")
@@ -72,22 +72,21 @@ bool FilamentHubClient::test_connection(
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Connection test successful. Status: " << status;
                 on_complete(body, status);
             })
-            .on_error([on_error, url](std::string body, std::string error, unsigned status) {
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Connection test failed to " << url 
-                                          << ". Error: " << error << ", Status: " << status;
-                // If health endpoint doesn't exist, try root endpoint
+            .on_error([on_error, on_complete](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Health check failed. Error: " << error << ", Status: " << status;
+                // If health endpoint doesn't exist, try root endpoint as fallback
                 if (status == 404) {
-                    std::string root_url = FilamentHubClient::get_api_base_url() + "/api/v1/";
+                    std::string root_url = FilamentHubClient::get_api_base_url() + "/";
                     Http::get(root_url)
                         .header("Content-Type", "application/json")
                         .header("Accept", "application/json")
                         .timeout_connect(5)
                         .timeout_max(10)
-                        .on_complete([on_complete](std::string body, unsigned status) {
+                        .on_complete([=](std::string body, unsigned status) {
                             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Connection test successful (root endpoint). Status: " << status;
                             on_complete(body, status);
                         })
-                        .on_error([on_error](std::string body, std::string error, unsigned status) {
+                        .on_error([=](std::string body, std::string error, unsigned status) {
                             BOOST_LOG_TRIVIAL(error) << "FilamentHub: Connection test failed. Error: " << error << ", Status: " << status;
                             on_error(body, error, status);
                         })
@@ -189,6 +188,79 @@ void FilamentHubClient::set_access_token(const std::string& token)
 void FilamentHubClient::clear_access_token()
 {
     m_access_token.clear();
+}
+
+void FilamentHubClient::download_profile(
+    int preset_id,
+    const std::string& access_token,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/presets/" + std::to_string(preset_id) + "/export/orcaslicer.json";
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Profile download successful. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Profile download failed. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in download_profile: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
+void FilamentHubClient::get_my_presets(
+    const std::string& access_token,
+    const std::string& updated_since,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/auth/my-presets";
+        
+        // Добавляем query параметр updated_since если указан
+        if (!updated_since.empty()) {
+            url += "?updated_since=" + Http::url_encode(updated_since);
+        }
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my presets successful. Status: " << status;
+                if (on_complete) {
+                    on_complete(body, status);
+                }
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get my presets failed. Error: " << error << ", Status: " << status;
+                if (on_error) {
+                    on_error(body, error, status);
+                }
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_my_presets: " << e.what();
+        if (on_error) {
+            on_error("", std::string("Exception: ") + e.what(), 0);
+        }
+    }
 }
 
 } // namespace Slic3r

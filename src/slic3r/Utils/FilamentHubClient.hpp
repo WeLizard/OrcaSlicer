@@ -135,6 +135,41 @@ public:
      */
     void clear_access_token();
 
+    /**
+     * \brief Download preset profile in OrcaSlicer JSON format
+     * 
+     * Downloads a preset profile from FilamentHub API in OrcaSlicer-compatible JSON format.
+     * 
+     * \param preset_id Preset ID in FilamentHub
+     * \param access_token JWT access token (optional, for private presets)
+     * \param on_complete Called when download succeeds. Parameters: (json_content, http_status)
+     * \param on_error Called when download fails. Parameters: (response_body, error_message, http_status)
+     */
+    void download_profile(
+        int preset_id,
+        const std::string& access_token,
+        std::function<void(std::string /* json_content */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Get user's presets (created + saved from catalog)
+     * 
+     * Retrieves all presets belonging to the authenticated user.
+     * Supports incremental sync via updated_since parameter.
+     * 
+     * \param access_token JWT access token
+     * \param updated_since Optional ISO 8601 timestamp for incremental sync
+     * \param on_complete Called when request succeeds. Parameters: (json_body, http_status)
+     * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)
+     */
+    void get_my_presets(
+        const std::string& access_token,
+        const std::string& updated_since = "",
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete = nullptr,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
+    ) const;
+
 private:
     std::string m_access_token;
     static std::string s_api_base_url;

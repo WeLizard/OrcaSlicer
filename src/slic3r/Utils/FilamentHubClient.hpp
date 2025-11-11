@@ -59,6 +59,7 @@ public:
     ~FilamentHubClient() = default;
 
     // API base URL (configurable, defaults to localhost:8000 for development)
+    static const std::string DEFAULT_API_BASE_URL;
     static std::string get_api_base_url();
     static void set_api_base_url(const std::string& url);
 

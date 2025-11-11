@@ -43,7 +43,11 @@
 #include <wx/button.h>
 #include <wx/stattext.h>
 #include <wx/panel.h>
+#include <wx/dialog.h>
+#include <wx/textctrl.h>
+// #include <wx/flexgrid.h> // Removed - wxFlexGridSizer should be available from other includes
 #include <nlohmann/json.hpp>
+#include <chrono>
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -57,19 +61,20 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <algorithm>
 
 namespace Slic3r {
 namespace GUI {
 
 // Static member initialization
-const wxString FilamentHubPanel::s_default_url = "http://localhost:3000";
-
-// AppConfig constants
+const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "http://localhost:3000";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";
 const std::string FilamentHubPanel::CONFIG_KEY_ACCESS_TOKEN = "access_token";
 const std::string FilamentHubPanel::CONFIG_KEY_USER_ID = "user_id";
 const std::string FilamentHubPanel::CONFIG_KEY_LAST_SYNC_TIME = "last_sync_time";
 const std::string FilamentHubPanel::CONFIG_KEY_PRESET_MAPPING = "preset_mapping";
+const std::string FilamentHubPanel::CONFIG_KEY_FRONTEND_URL = "frontend_url";
+const std::string FilamentHubPanel::CONFIG_KEY_API_BASE_URL = "api_base_url";
 
 FilamentHubPanel::FilamentHubPanel(wxWindow* parent, wxWindowID id, 
                                    const wxPoint& pos, 
@@ -77,6 +82,8 @@ FilamentHubPanel::FilamentHubPanel(wxWindow* parent, wxWindowID id,
                                    long style)
     : wxPanel(parent, id, pos, size, style)
 {
+    m_frontend_url = DEFAULT_FRONTEND_URL;
+    m_api_base_url = FilamentHubClient::DEFAULT_API_BASE_URL;
     SetBackgroundColour(*wxWHITE);
     init();
 }
@@ -91,6 +98,9 @@ FilamentHubPanel::~FilamentHubPanel()
 void FilamentHubPanel::init()
 {
     m_main_sizer = new wxBoxSizer(wxVERTICAL);
+
+    load_configuration();
+    apply_configuration();
 
     // Create info panel with navigation, user info and buttons
     m_info_panel = new wxPanel(this, wxID_ANY);
@@ -123,6 +133,10 @@ void FilamentHubPanel::init()
     m_sync_button->Bind(wxEVT_BUTTON, &FilamentHubPanel::on_sync_button_click, this);
     m_sync_button->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_sync_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+
+    m_settings_button = new wxButton(m_info_panel, wxID_ANY, _("Settings"), wxDefaultPosition, wxDefaultSize);
+    m_settings_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_settings_dialog(); });
+    info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
     
     // Login button - redirects to login page in WebView (user logs in there)
     m_login_button = new wxButton(m_info_panel, wxID_ANY, _("Login"), wxDefaultPosition, wxDefaultSize);
@@ -133,6 +147,14 @@ void FilamentHubPanel::init()
     m_logout_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { logout(); });
     m_logout_button->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_logout_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+
+    m_sync_status_label = new wxStaticText(m_info_panel, wxID_ANY, _("Ready"));
+    m_sync_status_label->Hide();
+    info_sizer->Add(m_sync_status_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+
+    m_sync_progress = new wxGauge(m_info_panel, wxID_ANY, 100, wxDefaultPosition, wxSize(120, -1));
+    m_sync_progress->Hide();
+    info_sizer->Add(m_sync_progress, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
     
     m_info_panel->SetSizer(info_sizer);
     m_info_panel->Layout();
@@ -181,7 +203,7 @@ void FilamentHubPanel::init()
     }
 
     // Load the default URL
-    load_url(s_default_url);
+    load_url(build_frontend_url());
 
     // Connect close event
     Bind(wxEVT_CLOSE_WINDOW, &FilamentHubPanel::OnClose, this);
@@ -388,186 +410,167 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
 
 void FilamentHubPanel::import_profile(int preset_id, const wxString& sequence_id)
 {
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Importing profile " << preset_id;
-    
-    // Дополнительная проверка валидности preset_id
+    std::string job_name = "import_profile_" + std::to_string(preset_id);
+    wxString sequence_copy(sequence_id);
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+
+    run_async(job_name, [this, preset_id, sequence_copy, api_base_url]() {
+        import_profile_internal(preset_id, sequence_copy, api_base_url);
+    });
+}
+
+void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& sequence_id, std::string api_base_url)
+{
     if (preset_id <= 0) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: Invalid preset_id in import_profile: " << preset_id;
-        send_response("import_profile", "error", 
-            wxString::Format(_("Invalid preset ID: %d"), preset_id).ToUTF8().data(), 
-            sequence_id);
-        wxMessageBox(
-            wxString::Format(_L("Invalid preset ID: %d. Cannot import profile."), preset_id),
-            _L("FilamentHub Import Error"),
-            wxOK | wxICON_WARNING
-        );
+        CallAfter([this, preset_id, sequence_id]() {
+            wxString message = wxString::Format(_L("Invalid preset ID: %d. Cannot import profile."), preset_id);
+            send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
+            wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_WARNING);
+        });
         return;
     }
     
-    // Проверяем, что preset_bundle доступен
-    if (wxGetApp().preset_bundle == nullptr) {
-        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot import";
-        send_response("import_profile", "error", _("Preset bundle not available").ToUTF8().data(), sequence_id);
-        wxMessageBox(
-            _L("Error: Preset bundle is not available. Please restart OrcaSlicer."),
-            _L("FilamentHub Import Error"),
-            wxOK | wxICON_ERROR
-        );
+    std::string access_token;
+    int user_id = 0;
+    if (!load_auth_token(access_token, user_id)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: No auth token found, cannot import profile";
+        CallAfter([this, sequence_id]() {
+            wxString message = _L("Authentication required. Please login to FilamentHub first.");
+            send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
+            wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_WARNING);
+        });
         return;
     }
     
-    // Get FilamentHub API base URL
-    std::string api_url = "http://localhost:8000";
-    
-    // Get access token from client (if available)
+    struct DownloadResult {
+        bool success { false };
+        unsigned status { 0 };
+        std::string body;
+        std::string error;
+    };
+
+    auto result = std::make_shared<DownloadResult>();
+
     FilamentHubClient client;
-    client.set_api_base_url(api_url);
-    std::string access_token = client.get_access_token();
+    client.set_api_base_url(api_base_url);
     
-    // Скачиваем профиль асинхронно
     client.download_profile(
         preset_id,
         access_token,
-        // on_complete: профиль успешно скачан
-        [this, preset_id, sequence_id](std::string json_content, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Profile downloaded successfully. Size: " << json_content.size();
-            
-            try {
-                // Парсим JSON чтобы добавить постфикс к имени и проверить родительский пресет
-                nlohmann::json profile_json = nlohmann::json::parse(json_content);
+        [result](std::string json_content, unsigned http_status) {
+            result->success = true;
+            result->status = http_status;
+            result->body = std::move(json_content);
+        },
+        [result](std::string body, std::string error, unsigned http_status) {
+            result->success = false;
+            result->status = http_status;
+            result->error = !error.empty() ? std::move(error) : std::move(body);
+        }
+    );
+
+    if (!result->success) {
+        wxString error_msg;
+        unsigned http_status = result->status;
+        std::string error_text = result->error;
+
+        if (http_status == 401) {
+            error_msg = _L("Authentication required. Please login to FilamentHub first.");
+        } else if (http_status == 404) {
+            error_msg = wxString::Format(_L("Profile %d not found."), preset_id);
+        } else if (http_status >= 500) {
+            error_msg = _L("Server error. Please try again later.");
+        } else {
+            error_msg = wxString::Format(_L("Failed to download profile: %s"), wxString::FromUTF8(error_text.c_str()));
+        }
+
+        CallAfter([this, sequence_id, error_msg]() {
+            send_response("import_profile", "error", error_msg.ToUTF8().data(), sequence_id);
+            wxMessageBox(error_msg, _L("FilamentHub Import Error"), wxOK | wxICON_ERROR);
+        });
+        return;
+    }
+
+    std::string profile_payload = std::move(result->body);
+
+    CallAfter([this, preset_id, sequence_id, profile_payload = std::move(profile_payload)]() mutable {
+        try {
+            nlohmann::json profile_json = nlohmann::json::parse(profile_payload);
                 
-                // Добавляем постфикс [FilamentHub] к имени пресета
-                std::string original_name = profile_json.value("name", "");
+            std::string original_name = profile_json.value("name", std::string());
                 std::string new_name = ensure_filamenthub_postfix(original_name);
                 profile_json["name"] = new_name;
                 
-                // Проверяем и исправляем родительский пресет (inherits)
                 ensure_parent_preset_exists(profile_json);
                 
-                // Создаём временный файл
                 boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
-                boost::filesystem::path temp_file = temp_dir / ("filamenthub_preset_" + std::to_string(preset_id) + "_" + 
-                    std::to_string(std::time(nullptr)) + ".json");
+            boost::filesystem::path temp_file = temp_dir / ("filamenthub_preset_" + std::to_string(preset_id) + "_" + std::to_string(std::time(nullptr)) + ".json");
                 
-                // Сохраняем JSON во временный файл
                 std::ofstream file(temp_file.string());
                 if (!file.is_open()) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to create temporary file: " << temp_file.string();
-                    send_response("import_profile", "error", _("Failed to create temporary file").ToUTF8().data(), sequence_id);
-                    wxMessageBox(
-                        _L("Failed to create temporary file for import."),
-                        _L("FilamentHub Import Error"),
-                        wxOK | wxICON_ERROR
-                    );
+                wxString message = _L("Failed to create temporary file for imported profile.");
+                send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
+                wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_ERROR);
                     return;
                 }
                 
                 file << profile_json.dump(2);
                 file.close();
                 
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved profile to: " << temp_file.string();
-                
-                // Импортируем профиль через PresetBundle
                 PresetBundle* bundle = wxGetApp().preset_bundle;
                 if (bundle == nullptr) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null during import";
-                    send_response("import_profile", "error", _("Preset bundle not available").ToUTF8().data(), sequence_id);
+                wxString message = _L("Preset bundle not available");
+                send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
+                wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_ERROR);
+                boost::filesystem::remove(temp_file);
                     return;
                 }
                 
                 PresetsConfigSubstitutions substitutions;
                 std::string file_path = temp_file.string();
-                int overwrite = 1; // 1 = overwrite if exists
-                std::vector<std::string> result;
+            int overwrite = 1;
+            std::vector<std::string> import_result;
                 
-                // Lambda для подтверждения перезаписи (если профиль уже существует)
-                auto override_confirm = [](std::string const& name) -> int {
-                    // Возвращаем 1 (yes) для автоматического перезаписывания
-                    // Или можно показать диалог: return wxMessageBox(...) == wxYES ? 1 : 0;
-                    return 1;
-                };
+            auto override_confirm = [](std::string const&) -> int { return 1; };
                 
-                // Импортируем JSON профиль
                 bool success = bundle->import_json_presets(
                     substitutions,
                     file_path,
                     override_confirm,
-                    ForwardCompatibilitySubstitutionRule::Enable, // Правило совместимости
+                ForwardCompatibilitySubstitutionRule::Enable,
                     overwrite,
-                    result
+                import_result
                 );
                 
-                // Удаляем временный файл
                 boost::filesystem::remove(temp_file);
                 
                 if (success) {
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Profile imported successfully";
-                    
-                    // Обновляем UI
                     wxGetApp().load_current_presets();
-                    
-                    // Отправляем успешный ответ во frontend
                     send_response("import_profile", "success", 
-                        wxString::Format(_("Profile %d imported successfully"), preset_id).ToUTF8().data(), 
+                    wxString::Format(_L("Profile %d imported successfully"), preset_id).ToUTF8().data(),
                         sequence_id);
                     
-                    // Показываем уведомление пользователю
                     wxMessageBox(
                         wxString::Format(_L("Profile %d imported successfully from FilamentHub."), preset_id),
                         _L("FilamentHub Import"),
                         wxOK | wxICON_INFORMATION
                     );
                 } else {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to import profile";
-                    send_response("import_profile", "error", 
-                        _("Failed to import profile. Check log for details.").ToUTF8().data(), 
-                        sequence_id);
-                    
+                wxString message = _L("Failed to import profile. Check log for details.");
+                send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
                     wxMessageBox(
                         _L("Failed to import profile. It may already exist or be invalid."),
                         _L("FilamentHub Import Error"),
                         wxOK | wxICON_WARNING
                     );
                 }
-                
             } catch (const std::exception& e) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception during import: " << e.what();
-                send_response("import_profile", "error", 
-                    wxString::Format(_("Error: %s"), e.what()).ToUTF8().data(), 
-                    sequence_id);
-                
-                wxMessageBox(
-                    wxString::Format(_L("Error importing profile: %s"), e.what()),
-                    _L("FilamentHub Import Error"),
-                    wxOK | wxICON_ERROR
-                );
-            }
-        },
-        // on_error: ошибка при скачивании
-        [this, preset_id, sequence_id](std::string body, std::string error, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to download profile " << preset_id 
-                                     << ". Error: " << error << ", Status: " << http_status;
-            
-            wxString error_msg;
-            if (http_status == 401) {
-                error_msg = _L("Authentication required. Please login to FilamentHub first.");
-            } else if (http_status == 404) {
-                error_msg = wxString::Format(_L("Profile %d not found."), preset_id);
-            } else if (http_status >= 500) {
-                error_msg = _L("Server error. Please try again later.");
-            } else {
-                error_msg = wxString::Format(_L("Failed to download profile: %s"), error);
-            }
-            
-            send_response("import_profile", "error", error_msg.ToUTF8().data(), sequence_id);
-            
-            wxMessageBox(
-                error_msg,
-                _L("FilamentHub Import Error"),
-                wxOK | wxICON_ERROR
-            );
+            wxString message = wxString::Format(_L("Error importing profile: %s"), wxString::FromUTF8(e.what()));
+            send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
+            wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_ERROR);
         }
-    );
+    });
 }
 
 void FilamentHubPanel::synchronize_presets(bool force_full_sync)
@@ -1388,9 +1391,14 @@ void FilamentHubPanel::update_sync_button_state(bool is_syncing)
     if (is_syncing) {
         m_sync_button->SetLabel(_("Synchronizing..."));
         m_sync_button->Disable();
+        m_sync_status_label->Show();
+        m_sync_progress->Show();
+        m_sync_progress->SetValue(0); // Reset progress
     } else {
         m_sync_button->SetLabel(_("Synchronize"));
         m_sync_button->Enable();
+        m_sync_status_label->Hide();
+        m_sync_progress->Hide();
     }
     
     m_info_panel->Layout();
@@ -1427,19 +1435,19 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
 
 void FilamentHubPanel::navigate_to_catalog()
 {
-    load_url(s_default_url + "/"); // Navigate to catalog page
+    load_url(build_frontend_url("/")); // Navigate to catalog page
 }
 
 void FilamentHubPanel::navigate_to_profile()
 {
-    load_url(s_default_url + "/profile"); // Navigate to profile page
+    load_url(build_frontend_url("/profile")); // Navigate to profile page
 }
 
 void FilamentHubPanel::show_login()
 {
     // Navigate to login page in WebView
     // User will log in there, and we'll receive login_success message via JavaScript
-    load_url(s_default_url + "/?auth=login");
+    load_url(build_frontend_url("/?auth=login"));
 }
 
 void FilamentHubPanel::logout()
@@ -1456,6 +1464,314 @@ void FilamentHubPanel::logout()
     
     // Navigate to catalog
     navigate_to_catalog();
+}
+
+void FilamentHubPanel::load_configuration()
+{
+    m_frontend_url = DEFAULT_FRONTEND_URL;
+    m_api_base_url = FilamentHubClient::DEFAULT_API_BASE_URL;
+
+    auto* config = wxGetApp().app_config;
+    if (config == nullptr) {
+        return;
+    }
+
+    std::string stored_frontend = config->get(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_FRONTEND_URL);
+    if (!stored_frontend.empty()) {
+        m_frontend_url = wxString::FromUTF8(stored_frontend.c_str()).Trim(true).Trim(false);
+    }
+
+    std::string stored_api = config->get(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_API_BASE_URL);
+    if (!stored_api.empty()) {
+        boost::algorithm::trim(stored_api);
+        m_api_base_url = stored_api;
+    }
+}
+
+void FilamentHubPanel::apply_configuration()
+{
+    update_api_base_url(m_api_base_url, false);
+    update_frontend_url(m_frontend_url, false, false);
+}
+
+void FilamentHubPanel::update_frontend_url(const wxString& url, bool persist, bool reload)
+{
+    wxString sanitized = url;
+    sanitized.Trim(true).Trim(false);
+    if (sanitized.IsEmpty()) {
+        sanitized = DEFAULT_FRONTEND_URL;
+    }
+
+    wxString lower = sanitized.Lower();
+    if (!lower.StartsWith("http://") && !lower.StartsWith("https://")) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Frontend URL looks invalid (missing scheme): " << sanitized.ToUTF8().data();
+    }
+
+    m_frontend_url = sanitized;
+
+    if (persist) {
+        auto* config = wxGetApp().app_config;
+        if (config != nullptr) {
+            config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_FRONTEND_URL, std::string(m_frontend_url.ToUTF8()));
+        }
+    }
+
+    if (reload) {
+        load_url(build_frontend_url());
+    }
+}
+
+void FilamentHubPanel::update_api_base_url(const std::string& url, bool persist)
+{
+    std::string sanitized = url;
+    boost::algorithm::trim(sanitized);
+    if (sanitized.empty()) {
+        sanitized = FilamentHubClient::DEFAULT_API_BASE_URL;
+    }
+
+    std::string lower = boost::algorithm::to_lower_copy(sanitized);
+    if (!boost::algorithm::starts_with(lower, "http://") && !boost::algorithm::starts_with(lower, "https://")) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: API base URL looks invalid (missing scheme): " << sanitized;
+    }
+
+    m_api_base_url = sanitized;
+    FilamentHubClient::set_api_base_url(m_api_base_url);
+
+    if (persist) {
+        auto* config = wxGetApp().app_config;
+        if (config != nullptr) {
+            config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_API_BASE_URL, m_api_base_url);
+        }
+    }
+}
+
+wxString FilamentHubPanel::build_frontend_url(const wxString& path_suffix) const
+{
+    wxString base = m_frontend_url.IsEmpty() ? DEFAULT_FRONTEND_URL : m_frontend_url;
+
+    wxString normalized = base;
+    while (normalized.Length() > 0 && normalized.EndsWith("/") && !normalized.EndsWith("://")) {
+        normalized.RemoveLast();
+    }
+
+    if (path_suffix.IsEmpty()) {
+        return normalized;
+    }
+
+    wxString suffix = path_suffix;
+    if (!suffix.StartsWith("/")) {
+        suffix.Prepend("/");
+    }
+
+    return normalized + suffix;
+}
+
+void FilamentHubPanel::show_settings_dialog()
+{
+    wxDialog dialog(this, wxID_ANY, _L("FilamentHub Settings"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
+
+    wxBoxSizer* top_sizer = new wxBoxSizer(wxVERTICAL);
+    wxFlexGridSizer* grid = new wxFlexGridSizer(2, 2, 8, 8);
+    grid->AddGrowableCol(1, 1);
+
+    grid->Add(new wxStaticText(&dialog, wxID_ANY, _L("Frontend URL")), 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+    wxTextCtrl* frontend_ctrl = new wxTextCtrl(&dialog, wxID_ANY, build_frontend_url());
+    grid->Add(frontend_ctrl, 1, wxEXPAND);
+
+    grid->Add(new wxStaticText(&dialog, wxID_ANY, _L("API Base URL")), 0, wxALIGN_CENTER_VERTICAL | wxALIGN_LEFT);
+    wxTextCtrl* api_ctrl = new wxTextCtrl(&dialog, wxID_ANY, wxString::FromUTF8(m_api_base_url.c_str()));
+    grid->Add(api_ctrl, 1, wxEXPAND);
+
+    top_sizer->Add(grid, 1, wxALL | wxEXPAND, 10);
+
+    wxSizer* button_sizer = dialog.CreateSeparatedButtonSizer(wxOK | wxCANCEL);
+    if (button_sizer != nullptr) {
+        top_sizer->Add(button_sizer, 0, wxALL | wxEXPAND, 10);
+    }
+
+    dialog.SetSizerAndFit(top_sizer);
+
+    if (dialog.ShowModal() != wxID_OK) {
+        return;
+    }
+
+    wxString new_frontend = frontend_ctrl->GetValue().Trim(true).Trim(false);
+    wxString new_api_wx = api_ctrl->GetValue().Trim(true).Trim(false);
+
+    auto is_http_url = [](const wxString& value) {
+        if (value.IsEmpty()) {
+            return true;
+        }
+        wxString lower = value.Lower();
+        return lower.StartsWith("http://") || lower.StartsWith("https://");
+    };
+
+    if (!is_http_url(new_frontend)) {
+        wxMessageBox(_L("Please enter a valid frontend URL (must start with http:// or https://)."), _L("FilamentHub"), wxOK | wxICON_WARNING, this);
+        show_settings_dialog();
+        return;
+    }
+
+    if (!is_http_url(new_api_wx)) {
+        wxMessageBox(_L("Please enter a valid API base URL (must start with http:// or https://)."), _L("FilamentHub"), wxOK | wxICON_WARNING, this);
+        show_settings_dialog();
+        return;
+    }
+
+    update_frontend_url(new_frontend, true, true);
+    update_api_base_url(std::string(new_api_wx.ToUTF8()), true);
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Updated URLs. Frontend=" << new_frontend.ToUTF8().data()
+                            << ", API=" << (new_api_wx.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : new_api_wx.ToUTF8().data());
+}
+
+void FilamentHubPanel::cleanup_finished_tasks()
+{
+    std::lock_guard<std::mutex> lock(m_async_mutex);
+    for (auto it = m_async_tasks.begin(); it != m_async_tasks.end(); ) {
+        if (!it->valid() || it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            if (it->valid()) {
+                it->wait();
+            }
+            it = m_async_tasks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void FilamentHubPanel::update_async_ui()
+{
+    cleanup_finished_tasks();
+
+    size_t active_jobs = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_async_mutex);
+        active_jobs = m_active_async_jobs;
+    }
+
+    bool busy = active_jobs > 0;
+
+    if (m_settings_button != nullptr) {
+        m_settings_button->Enable(!busy);
+    }
+
+    if (m_catalog_button != nullptr) {
+        m_catalog_button->Enable(!busy);
+    }
+
+    if (m_profile_button != nullptr) {
+        m_profile_button->Enable(!busy);
+    }
+
+    if (m_login_button != nullptr) {
+        m_login_button->Enable(!busy);
+    }
+
+    if (m_logout_button != nullptr) {
+        m_logout_button->Enable(!busy);
+    }
+
+    if (m_sync_button != nullptr && !m_is_syncing) {
+        m_sync_button->Enable(!busy);
+    }
+}
+
+void FilamentHubPanel::run_async(const std::string& job_name, std::function<void()> job)
+{
+    cleanup_finished_tasks();
+
+    {
+        std::lock_guard<std::mutex> lock(m_async_mutex);
+        ++m_active_async_jobs;
+    }
+
+    update_async_ui();
+
+    auto future = std::async(std::launch::async, [this, job_name, job = std::move(job)]() mutable {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Async job started: " << job_name;
+        try {
+            job();
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in async job '" << job_name << "': " << e.what();
+            wxString message = wxString::Format(_L("Unexpected error: %s"), wxString::FromUTF8(e.what()));
+            CallAfter([this, message]() {
+                wxMessageBox(message, _L("FilamentHub"), wxOK | wxICON_ERROR, this);
+            });
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception in async job '" << job_name << "'";
+            CallAfter([this]() {
+                wxMessageBox(_L("Unexpected error during FilamentHub operation."), _L("FilamentHub"), wxOK | wxICON_ERROR, this);
+            });
+        }
+
+        CallAfter([this]() {
+            {
+                std::lock_guard<std::mutex> lock(m_async_mutex);
+                if (m_active_async_jobs > 0) {
+                    --m_active_async_jobs;
+                }
+            }
+            update_async_ui();
+        });
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Async job finished: " << job_name;
+    });
+
+    {
+        std::lock_guard<std::mutex> lock(m_async_mutex);
+        m_async_tasks.emplace_back(std::move(future));
+    }
+}
+
+void FilamentHubPanel::show_sync_progress(int total_steps)
+{
+    if (m_sync_progress == nullptr || m_sync_status_label == nullptr) {
+        return;
+    }
+
+    if (total_steps <= 0) {
+        total_steps = 100;
+    }
+
+    m_sync_progress->SetRange(total_steps);
+    m_sync_progress->SetValue(0);
+    m_sync_progress->Show(true);
+    m_sync_status_label->SetLabel(_L("Synchronizing presets..."));
+    m_sync_status_label->Show(true);
+    m_info_panel->Layout();
+}
+
+void FilamentHubPanel::update_sync_progress_ui(int completed, int total, const wxString& status_text)
+{
+    if (m_sync_progress == nullptr || m_sync_status_label == nullptr) {
+        return;
+    }
+
+    if (total > 0) {
+        m_sync_progress->SetRange(total);
+    }
+
+    if (completed >= 0) {
+        m_sync_progress->SetValue(std::min(completed, m_sync_progress->GetRange()));
+    }
+
+    if (!status_text.IsEmpty()) {
+        m_sync_status_label->SetLabel(status_text);
+    }
+
+    m_info_panel->Layout();
+}
+
+void FilamentHubPanel::hide_sync_progress()
+{
+    if (m_sync_progress == nullptr || m_sync_status_label == nullptr) {
+        return;
+    }
+
+    m_sync_progress->Hide();
+    m_sync_status_label->Hide();
+    m_info_panel->Layout();
 }
 
 }} // namespace Slic3r::GUI

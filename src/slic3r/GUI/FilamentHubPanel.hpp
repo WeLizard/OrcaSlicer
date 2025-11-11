@@ -39,6 +39,11 @@
 #include <wx/sizer.h>
 #include <wx/webview.h>
 #include <wx/event.h>
+#include <wx/gauge.h>
+#include <future>
+#include <functional>
+#include <mutex>
+#include <vector>
 #include <memory>
 
 namespace Slic3r {
@@ -259,7 +264,9 @@ private:
     wxWebView* m_browser { nullptr };
     wxBoxSizer* m_main_sizer { nullptr };
     wxString m_url_deferred; // URL to load when panel becomes visible
-    static const wxString s_default_url; // Default FilamentHub frontend URL
+    wxString m_frontend_url; // Current frontend URL
+    std::string m_api_base_url; // Current API base URL
+    static const wxString DEFAULT_FRONTEND_URL; // Default FilamentHub frontend URL
     
     // UI elements
     wxPanel* m_info_panel { nullptr }; // Panel with user info and sync button
@@ -270,7 +277,10 @@ private:
     wxButton* m_profile_button { nullptr }; // Profile navigation button (only if logged in)
     wxButton* m_login_button { nullptr }; // Login button (only if not logged in)
     wxButton* m_logout_button { nullptr }; // Logout button (only if logged in)
+    wxButton* m_settings_button { nullptr }; // Settings button for URLs
     bool m_is_syncing { false }; // Is sync in progress
+    wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
+    wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     
     // Constants for AppConfig keys
     static const std::string CONFIG_SECTION_FILAMENTHUB;
@@ -278,6 +288,28 @@ private:
     static const std::string CONFIG_KEY_USER_ID;
     static const std::string CONFIG_KEY_LAST_SYNC_TIME;
     static const std::string CONFIG_KEY_PRESET_MAPPING;
+    static const std::string CONFIG_KEY_FRONTEND_URL;
+    static const std::string CONFIG_KEY_API_BASE_URL;
+
+    void load_configuration();
+    void apply_configuration();
+    void show_settings_dialog();
+    void update_frontend_url(const wxString& url, bool persist = true, bool reload = true);
+    void update_api_base_url(const std::string& url, bool persist = true);
+    wxString build_frontend_url(const wxString& path_suffix = wxEmptyString) const;
+
+    void import_profile_internal(int preset_id, const wxString& sequence_id, std::string api_base_url);
+
+    void run_async(const std::string& job_name, std::function<void()> job);
+    void cleanup_finished_tasks();
+    void update_async_ui();
+    void show_sync_progress(int total_steps);
+    void update_sync_progress_ui(int completed, int total, const wxString& status_text);
+    void hide_sync_progress();
+
+    std::mutex m_async_mutex;
+    std::vector<std::future<void>> m_async_tasks;
+    size_t m_active_async_jobs { 0 };
 };
 
 }} // namespace Slic3r::GUI

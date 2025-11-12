@@ -237,6 +237,12 @@ void FilamentHubClient::get_my_presets(
             url += "?updated_since=" + Http::url_encode(updated_since);
         }
         
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: ========== get_my_presets() CALLED ==========";
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: URL: " << url;
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: updated_since: " << (updated_since.empty() ? "(empty)" : updated_since);
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: access_token length: " << access_token.length();
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: API base URL: " << s_api_base_url;
+        
         Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
@@ -244,23 +250,266 @@ void FilamentHubClient::get_my_presets(
             .timeout_connect(10)
             .timeout_max(30)
             .on_complete([on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my presets successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get my presets successful. Status: " << status << ", Body size: " << body.size() << " bytes";
                 if (on_complete) {
                     on_complete(body, status);
                 }
             })
             .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: ========== get_my_presets() on_error CALLBACK ==========";
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get my presets failed. Error: " << error << ", Status: " << status;
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body size: " << body.size() << " bytes";
+                if (body.size() < 500) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body: " << body;
+                } else {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body (first 500 chars): " << body.substr(0, 500);
+                }
+                if (on_error) {
+                    on_error(body, error, status);
+                }
+            })
+            .perform_sync();
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: get_my_presets: perform_sync() RETURNED (request completed or failed)";
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: get_my_presets: After perform_sync(), callbacks should be called";
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: ========== get_my_presets() EXCEPTION ==========";
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_my_presets: " << e.what();
+        // Не используем typeid, так как может не быть доступен
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception caught in get_my_presets";
+        if (on_error) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Calling on_error callback with exception details";
+            on_error("", std::string("Exception: ") + e.what(), 0);
+        } else {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: on_error callback is NULL, cannot report error";
+        }
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: ========== get_my_presets() UNKNOWN EXCEPTION ==========";
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception in get_my_presets";
+        if (on_error) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Calling on_error callback with unknown exception";
+            on_error("", "Unknown exception", 0);
+        } else {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: on_error callback is NULL, cannot report error";
+        }
+    }
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: get_my_presets: FUNCTION END";
+}
+
+void FilamentHubClient::get_my_printer_profiles(
+    const std::string& access_token,
+    const std::string& updated_since,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/orcaslicer/printer-profiles";
+        
+        // Добавляем query параметры
+        bool has_query = false;
+        if (!updated_since.empty()) {
+            url += "?updated_since=" + Http::url_encode(updated_since);
+            has_query = true;
+        }
+        // Включаем официальные профили по умолчанию
+        url += (has_query ? "&" : "?") + std::string("include_official=true");
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my printer profiles successful. Status: " << status;
+                if (on_complete) {
+                    on_complete(body, status);
+                }
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get my printer profiles failed. Error: " << error << ", Status: " << status;
                 if (on_error) {
                     on_error(body, error, status);
                 }
             })
             .perform_sync();
     } catch (const std::exception& e) {
-        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_my_presets: " << e.what();
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_my_printer_profiles: " << e.what();
         if (on_error) {
             on_error("", std::string("Exception: ") + e.what(), 0);
         }
+    }
+}
+
+void FilamentHubClient::get_my_print_profiles(
+    const std::string& access_token,
+    const std::string& updated_since,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/orcaslicer/print-profiles";
+        
+        // Добавляем query параметры
+        bool has_query = false;
+        if (!updated_since.empty()) {
+            url += "?updated_since=" + Http::url_encode(updated_since);
+            has_query = true;
+        }
+        // Включаем официальные профили по умолчанию
+        url += (has_query ? "&" : "?") + std::string("include_official=true");
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my print profiles successful. Status: " << status;
+                if (on_complete) {
+                    on_complete(body, status);
+                }
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get my print profiles failed. Error: " << error << ", Status: " << status;
+                if (on_error) {
+                    on_error(body, error, status);
+                }
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_my_print_profiles: " << e.what();
+        if (on_error) {
+            on_error("", std::string("Exception: ") + e.what(), 0);
+        }
+    }
+}
+
+void FilamentHubClient::download_printer_profile(
+    int profile_id,
+    const std::string& access_token,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/printer-profiles/" + std::to_string(profile_id) + "/export/orcaslicer.json";
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profile download successful. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Printer profile download failed. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in download_printer_profile: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
+void FilamentHubClient::download_print_profile(
+    int profile_id,
+    const std::string& access_token,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/print-profiles/" + std::to_string(profile_id) + "/export/orcaslicer.json";
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profile download successful. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Print profile download failed. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in download_print_profile: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
+void FilamentHubClient::import_printer_profiles(
+    const std::string& access_token,
+    const std::string& profiles_json,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/orcaslicer/printer-profiles/import";
+        
+        Http::post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .set_post_body(profiles_json)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles import successful. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Printer profiles import failed. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in import_printer_profiles: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
+void FilamentHubClient::import_print_profiles(
+    const std::string& access_token,
+    const std::string& profiles_json,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/orcaslicer/print-profiles/import";
+        
+        Http::post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .set_post_body(profiles_json)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles import successful. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Print profiles import failed. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in import_print_profiles: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
     }
 }
 

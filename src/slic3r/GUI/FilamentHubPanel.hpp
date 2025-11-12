@@ -40,6 +40,7 @@
 #include <wx/webview.h>
 #include <wx/event.h>
 #include <wx/gauge.h>
+#include "Widgets/Button.hpp"
 #include <future>
 #include <functional>
 #include <mutex>
@@ -337,6 +338,40 @@ private:
     bool import_print_profile_silent(int profile_id, const std::string& profile_name, const std::string& access_token);
 
     /**
+     * \brief Get deleted preset action from AppConfig
+     * 
+     * \return Action: "ask" (default), "import", "delete", "skip"
+     */
+    std::string get_deleted_preset_action();
+    
+    /**
+     * \brief Set deleted preset action in AppConfig
+     * 
+     * \param action Action: "ask", "import", "delete", "skip"
+     */
+    void set_deleted_preset_action(const std::string& action);
+    
+    /**
+     * \brief Ask user what to do with deleted preset
+     * 
+     * Shows a dialog with options: import, delete from FilamentHub, or cancel.
+     * 
+     * \param preset_id Preset ID in FilamentHub
+     * \param preset_name Preset name
+     * \return Action: "import", "delete", or "cancel"
+     */
+    std::string ask_deleted_preset_action(int preset_id, const std::string& preset_name);
+    
+    /**
+     * \brief Delete preset from FilamentHub
+     * 
+     * \param preset_id Preset ID in FilamentHub
+     * \param access_token Access token for API
+     * \return true if deleted successfully, false otherwise
+     */
+    bool delete_preset_from_filamenthub(int preset_id, const std::string& access_token);
+
+    /**
      * \brief Check user permissions before synchronization
      * 
      * Retrieves user info from FilamentHub API and checks if user has permissions
@@ -367,6 +402,20 @@ private:
      * \brief Update UI visibility based on login state
      */
     void update_ui_for_login_state(bool is_logged_in);
+    
+    /**
+     * \brief Update unread notifications count
+     * 
+     * Fetches unread notifications count from API and updates the badge on the notifications button.
+     */
+    void update_unread_notifications_count();
+    
+    /**
+     * \brief Show notifications dropdown in WebView
+     * 
+     * Injects JavaScript to show notifications dropdown menu in the WebView.
+     */
+    void show_notifications_dropdown();
 
 private:
     wxWebView* m_browser { nullptr };
@@ -380,16 +429,35 @@ private:
     wxPanel* m_info_panel { nullptr }; // Panel with user info and sync button
     wxStaticText* m_user_name_label { nullptr }; // User name label
     wxStaticText* m_preset_count_label { nullptr }; // Preset count label
-    wxButton* m_sync_button { nullptr }; // Sync button
-    wxButton* m_catalog_button { nullptr }; // Catalog navigation button
-    wxButton* m_profile_button { nullptr }; // Profile navigation button (only if logged in)
-    wxButton* m_login_button { nullptr }; // Login button (only if not logged in)
-    wxButton* m_logout_button { nullptr }; // Logout button (only if logged in)
-    wxButton* m_settings_button { nullptr }; // Settings button for URLs
+    Button* m_sync_button { nullptr }; // Sync button
+    Button* m_catalog_button { nullptr }; // Catalog navigation button
+    Button* m_profile_button { nullptr }; // Profile navigation button (only if logged in)
+    Button* m_login_button { nullptr }; // Login button (only if not logged in)
+    Button* m_logout_button { nullptr }; // Logout button (only if logged in)
+    Button* m_settings_button { nullptr }; // Settings button for URLs
+    Button* m_notifications_button { nullptr }; // Notifications button (only if logged in)
+    wxStaticText* m_notifications_badge { nullptr }; // Badge showing unread notifications count
+    Button* m_admin_button { nullptr }; // Admin panel button (only if admin)
+    Button* m_refresh_button { nullptr }; // Refresh/Reload button
     bool m_is_syncing { false }; // Is sync in progress
     int m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
+    int m_unread_notifications_count { 0 }; // Unread notifications count
+    
+    // Async preset import queue
+    struct PresetImportTask {
+        int preset_id;
+        std::string preset_name;
+        std::string access_token;
+        std::string api_base_url;
+    };
+    std::vector<PresetImportTask> m_preset_import_queue; // Queue of presets to import
+    std::mutex m_preset_queue_mutex; // Mutex for preset queue
+    int m_synced_count { 0 }; // Counter for successfully synced presets
+    int m_error_count { 0 }; // Counter for failed presets
+    int m_total_presets_to_sync { 0 }; // Total number of presets to sync
+    bool m_processing_preset_queue { false }; // Is preset queue being processed
     
     // Constants for AppConfig keys
     static const std::string CONFIG_SECTION_FILAMENTHUB;
@@ -401,6 +469,7 @@ private:
     static const std::string CONFIG_KEY_PRINT_PROFILE_MAPPING;
     static const std::string CONFIG_KEY_FRONTEND_URL;
     static const std::string CONFIG_KEY_API_BASE_URL;
+    static const std::string CONFIG_KEY_DELETED_PRESET_ACTION; // "ask", "import", "delete", "skip"
 
     void load_configuration();
     void apply_configuration();
@@ -410,6 +479,11 @@ private:
     wxString build_frontend_url(const wxString& path_suffix = wxEmptyString) const;
 
     void import_profile_internal(int preset_id, const wxString& sequence_id, std::string api_base_url);
+    
+    void process_preset_import_queue(); // Process preset import queue sequentially
+    void import_preset_silent_with_callback(int preset_id, const std::string& preset_name, 
+                                           const std::string& access_token,
+                                           std::function<void(bool success)> on_complete);
 
     void run_async(const std::string& job_name, std::function<void()> job);
     void cleanup_finished_tasks();

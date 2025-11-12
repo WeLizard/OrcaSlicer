@@ -275,6 +275,56 @@ public:
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
     ) const;
 
+    /**
+     * \brief Delete preset from FilamentHub
+     * 
+     * Deletes a preset from FilamentHub. Only the owner can delete their own presets.
+     * 
+     * \param preset_id Preset ID in FilamentHub
+     * \param access_token JWT access token
+     * \param on_complete Called when deletion succeeds. Parameters: (response_body, http_status)
+     * \param on_error Called when deletion fails. Parameters: (response_body, error_message, http_status)
+     */
+    void delete_preset(
+        int preset_id,
+        const std::string& access_token,
+        std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Report deleted presets to FilamentHub
+     * 
+     * Reports presets that were deleted locally in OrcaSlicer.
+     * This allows the backend to create notifications and handle user preferences.
+     * 
+     * \param access_token JWT access token
+     * \param deleted_presets_json JSON array of deleted presets with preset_id, preset_name, bundle_preset_name
+     * \param on_complete Called when report succeeds. Parameters: (response_body, http_status)
+     * \param on_error Called when report fails. Parameters: (response_body, error_message, http_status)
+     */
+    void report_deleted_presets(
+        const std::string& access_token,
+        const std::string& deleted_presets_json,
+        std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Get unread notifications count
+     * 
+     * Retrieves the count of unread notifications for the authenticated user.
+     * 
+     * \param access_token JWT access token
+     * \param on_complete Called when request succeeds. Parameters: (response_body with unread_count, http_status)
+     * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)
+     */
+    void get_unread_notifications_count(
+        const std::string& access_token,
+        std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
 private:
     std::string m_access_token;
     static std::string s_api_base_url;

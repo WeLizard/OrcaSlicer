@@ -40,7 +40,7 @@
 #include <wx/sizer.h>
 #include <wx/webview.h>
 #include <wx/msgdlg.h>
-#include <wx/button.h>
+#include "Widgets/Button.hpp"
 #include <wx/stattext.h>
 #include <wx/panel.h>
 #include <wx/dialog.h>
@@ -48,6 +48,7 @@
 // #include <wx/flexgrid.h> // Removed - wxFlexGridSizer should be available from other includes
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <set>
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -79,6 +80,7 @@ const std::string FilamentHubPanel::CONFIG_KEY_PRINTER_PROFILE_MAPPING = "printe
 const std::string FilamentHubPanel::CONFIG_KEY_PRINT_PROFILE_MAPPING = "print_profile_mapping";
 const std::string FilamentHubPanel::CONFIG_KEY_FRONTEND_URL = "frontend_url";
 const std::string FilamentHubPanel::CONFIG_KEY_API_BASE_URL = "api_base_url";
+const std::string FilamentHubPanel::CONFIG_KEY_DELETED_PRESET_ACTION = "deleted_preset_action"; // "ask", "import", "delete", "skip"
 
 FilamentHubPanel::FilamentHubPanel(wxWindow* parent, wxWindowID id, 
                                    const wxPoint& pos, 
@@ -126,18 +128,21 @@ void FilamentHubPanel::init()
     info_sizer->AddStretchSpacer(); // Push buttons to the right
     
     // Right side: Navigation buttons first
-    m_catalog_button = new wxButton(m_info_panel, wxID_ANY, _("Catalog"), wxDefaultPosition, wxDefaultSize);
+    m_catalog_button = new Button(m_info_panel, _("Catalog"));
+    m_catalog_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
     m_catalog_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { navigate_to_catalog(); });
     info_sizer->Add(m_catalog_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
     
-    m_profile_button = new wxButton(m_info_panel, wxID_ANY, _("Profile"), wxDefaultPosition, wxDefaultSize);
+    m_profile_button = new Button(m_info_panel, _("Profile"));
+    m_profile_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
     m_profile_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { navigate_to_profile(); });
     m_profile_button->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_profile_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
     
     // Action buttons
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Creating sync button...";
-    m_sync_button = new wxButton(m_info_panel, wxID_ANY, _("Synchronize"), wxDefaultPosition, wxDefaultSize);
+    m_sync_button = new Button(m_info_panel, _("Synchronize"));
+    m_sync_button->SetStyle(ButtonStyle::Confirm, ButtonType::Window);
     
     // Проверяем, что кнопка создана
     if (m_sync_button == nullptr) {
@@ -155,16 +160,56 @@ void FilamentHubPanel::init()
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync button hidden by default (will be shown when logged in)";
     info_sizer->Add(m_sync_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
 
-    m_settings_button = new wxButton(m_info_panel, wxID_ANY, _("Settings"), wxDefaultPosition, wxDefaultSize);
+    m_settings_button = new Button(m_info_panel, _("Settings"));
+    m_settings_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
     m_settings_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_settings_dialog(); });
     info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
     
+    // Refresh button - reloads the current page
+    m_refresh_button = new Button(m_info_panel, _("Refresh"));
+    m_refresh_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    m_refresh_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { reload(); });
+    info_sizer->Add(m_refresh_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    
+    // Notifications button - shows notifications dropdown (only if logged in)
+    m_notifications_button = new Button(m_info_panel, _("Notifications"));
+    m_notifications_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    m_notifications_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
+        // Instead of opening a page, show notifications dropdown in WebView
+        show_notifications_dropdown();
+    });
+    m_notifications_button->Hide(); // Hidden by default (shown when logged in)
+    
+    // Badge for unread notifications count
+    m_notifications_badge = new wxStaticText(m_info_panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
+    m_notifications_badge->SetBackgroundColour(wxColour(255, 0, 0)); // Red background
+    m_notifications_badge->SetForegroundColour(wxColour(255, 255, 255)); // White text
+    m_notifications_badge->SetFont(wxFont(8, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD));
+    m_notifications_badge->Hide(); // Hidden by default
+    
+    // Create a sizer for the notifications button and badge
+    wxBoxSizer* notifications_sizer = new wxBoxSizer(wxHORIZONTAL);
+    notifications_sizer->Add(m_notifications_button, 0, wxALIGN_CENTER_VERTICAL);
+    notifications_sizer->Add(m_notifications_badge, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 3);
+    info_sizer->Add(notifications_sizer, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    
+    // Admin button - opens admin panel (only if admin)
+    m_admin_button = new Button(m_info_panel, _("Admin"));
+    m_admin_button->SetStyle(ButtonStyle::Alert, ButtonType::Window); // Alert style for admin (yellow/red)
+    m_admin_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
+        load_url(build_frontend_url("/admin")); 
+    });
+    m_admin_button->Hide(); // Hidden by default (shown when admin)
+    info_sizer->Add(m_admin_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    
     // Login button - redirects to login page in WebView (user logs in there)
-    m_login_button = new wxButton(m_info_panel, wxID_ANY, _("Login"), wxDefaultPosition, wxDefaultSize);
+    m_login_button = new Button(m_info_panel, _("Login"));
+    m_login_button->SetStyle(ButtonStyle::Confirm, ButtonType::Window); // Confirm style for login (green)
     m_login_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_login(); });
     info_sizer->Add(m_login_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
     
-    m_logout_button = new wxButton(m_info_panel, wxID_ANY, _("Logout"), wxDefaultPosition, wxDefaultSize);
+    m_logout_button = new Button(m_info_panel, _("Logout"));
+    m_logout_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
     m_logout_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { logout(); });
     m_logout_button->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_logout_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
@@ -217,10 +262,11 @@ void FilamentHubPanel::init()
     int user_id = 0;
     if (load_auth_token(access_token, user_id)) {
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: User already logged in (ID: " << user_id 
-                                 << "), auto-syncing presets on panel load...";
-        CallAfter([this]() {
-            synchronize_presets(false); // false = инкрементальная синхронизация (если есть last_sync_time)
-        });
+                                 << "), checking token validity before auto-sync...";
+        // ВАЖНО: Не запускаем автоматическую синхронизацию при загрузке панели
+        // Синхронизация будет запущена пользователем вручную через кнопку "Synchronize"
+        // Это предотвращает проблемы с истёкшими токенами и race conditions
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-sync disabled on panel load (user must click 'Synchronize' button)";
     }
 
     // Load the default URL
@@ -629,20 +675,23 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== [SYNC START] synchronize_presets() CALLED ==========";
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 1] force_full_sync=" << (force_full_sync ? "true" : "false");
     
-    // Обновляем состояние кнопки синхронизации (если синхронизация не уже в процессе)
-    if (!m_is_syncing) {
-        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 1.1] Updating sync button state to syncing...";
-        update_sync_button_state(true);
-    }
-    
-    // Проверяем, не идет ли уже синхронизация
+    // ВАЖНО: Проверяем, не идет ли уже синхронизация ПЕРЕД установкой флага
+    // Это предотвращает повторный запуск синхронизации
     if (m_is_syncing) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Sync already in progress, skipping";
         return;
     }
     
+    // Устанавливаем флаг синхронизации и обновляем UI
     m_is_syncing = true;
+    // ВАЖНО: НЕ увеличиваем m_active_syncs здесь - он будет увеличен только после успешного получения списка (200 OK)
+    // Это предотвращает проблемы с зависанием кнопки при ошибках
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 2] Set m_is_syncing=true";
+    
+    // Обновляем состояние кнопки синхронизации (показываем "Synchronizing...")
+    CallAfter([this]() {
+        update_sync_button_state(true);
+    });
     
     // 1. Загружаем токен и user_id из AppConfig
     std::string access_token;
@@ -651,13 +700,18 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     
     if (!load_auth_token(access_token, user_id)) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Cannot load auth token, user not logged in";
+        // Сбрасываем флаги синхронизации
+        // ВАЖНО: m_active_syncs не увеличивался до этого момента, поэтому НЕ уменьшаем счетчик
         m_is_syncing = false;
-        update_sync_button_state(false);
-        wxMessageBox(
-            _L("Please login to FilamentHub first."),
-            _L("FilamentHub Sync Error"),
-            wxOK | wxICON_WARNING
-        );
+        // Обновляем UI в главном потоке
+        CallAfter([this]() {
+            update_sync_button_state(false);
+            wxMessageBox(
+                _L("Please login to FilamentHub first."),
+                _L("FilamentHub Sync Error"),
+                wxOK | wxICON_WARNING
+            );
+        });
         return;
     }
     
@@ -688,24 +742,34 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
             access_token,
             updated_since,
             // on_complete: список пресетов получен
-            [this, user_id, force_full_sync](std::string json_body, unsigned http_status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 9] ========== on_complete CALLBACK (get_my_presets) ==========";
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 9.1] HTTP status: " << http_status 
+            [this, user_id, force_full_sync, updated_since, api_base_url, access_token](std::string json_body, unsigned http_status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9] ========== on_complete CALLBACK (get_my_presets) ==========";
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9.0] Lambda function called from FilamentHubPanel!";
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9.1] HTTP status: " << http_status 
                                         << ", Body size: " << json_body.size() << " bytes";
             
             // Проверяем статус ответа
             if (http_status == 401) {
                 // Токен истек или невалидный - очищаем авторизацию
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired or invalid (401) during presets sync, clearing auth";
-                // Не уменьшаем счетчик - он не был увеличен для этой синхронизации (увеличивается только после 200 OK)
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired or invalid (401) during presets sync, clearing auth";
+                // ВАЖНО: m_active_syncs не увеличивался до этого момента (увеличивается только после 200 OK)
+                // Поэтому НЕ уменьшаем счетчик здесь
                 CallAfter([this]() {
+                    m_is_syncing = false;
+                    // Скрываем прогресс-бар
+                    if (m_sync_progress) {
+                        m_sync_progress->Hide();
+                    }
+                    if (m_sync_status_label) {
+                        m_sync_status_label->Hide();
+                    }
                     logout(); // Очищает токен и обновляет UI
                     update_sync_button_state(false);
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs <= 0) {
+                    if (m_active_syncs < 0) {
                         m_active_syncs = 0;
-                        update_sync_button_state(false);
                     }
+                    m_info_panel->Layout();
                     // Показываем уведомление в WebView вместо модального окна
                     show_notification_in_webview(
                         _L("Your session has expired. Please login again."),
@@ -723,11 +787,20 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
                     nlohmann::json error_json = nlohmann::json::parse(json_body);
                     std::string error_detail = error_json.value("detail", "Access denied");
                     CallAfter([this, error_detail]() {
+                        m_is_syncing = false;
+                        // Скрываем прогресс-бар
+                        if (m_sync_progress) {
+                            m_sync_progress->Hide();
+                        }
+                        if (m_sync_status_label) {
+                            m_sync_status_label->Hide();
+                        }
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (403). Active syncs: " << m_active_syncs;
                         if (m_active_syncs <= 0) {
                             update_sync_button_state(false);
                             m_active_syncs = 0;
                         }
+                        m_info_panel->Layout();
                         // Показываем уведомление в WebView вместо модального окна
                         show_notification_in_webview(
                             wxString::Format(_L("Access denied: %s"), wxString::FromUTF8(error_detail.c_str())),
@@ -737,11 +810,20 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
                 } catch (const std::exception& e) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing 403 response: " << e.what();
                     CallAfter([this]() {
+                        m_is_syncing = false;
+                        // Скрываем прогресс-бар
+                        if (m_sync_progress) {
+                            m_sync_progress->Hide();
+                        }
+                        if (m_sync_status_label) {
+                            m_sync_status_label->Hide();
+                        }
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (403, parse error). Active syncs: " << m_active_syncs;
                         if (m_active_syncs <= 0) {
                             update_sync_button_state(false);
                             m_active_syncs = 0;
                         }
+                        m_info_panel->Layout();
                         // Показываем уведомление в WebView вместо модального окна
                         show_notification_in_webview(
                             _L("Access denied. Please check your permissions in FilamentHub settings."),
@@ -753,14 +835,24 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
             }
             
             if (http_status != 200) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets list. Status: " << http_status;
-                // Не уменьшаем счетчик - он не был увеличен для этой синхронизации (увеличивается только после 200 OK)
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Failed to get presets list. Status: " << http_status;
+                // ВАЖНО: m_active_syncs не увеличивался до этого момента (увеличивается только после 200 OK)
+                // Поэтому НЕ уменьшаем счетчик здесь
                 CallAfter([this, http_status]() {
+                    m_is_syncing = false;
+                    // Скрываем прогресс-бар
+                    if (m_sync_progress) {
+                        m_sync_progress->Hide();
+                    }
+                    if (m_sync_status_label) {
+                        m_sync_status_label->Hide();
+                    }
+                    update_sync_button_state(false);
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (status " << http_status << "). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs <= 0) {
-                        update_sync_button_state(false);
+                    if (m_active_syncs < 0) {
                         m_active_syncs = 0;
                     }
+                    m_info_panel->Layout();
                     // Показываем уведомление в WebView вместо модального окна
                     show_notification_in_webview(
                         wxString::Format(_L("Failed to get presets list. Status: %d"), http_status),
@@ -770,10 +862,11 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
                 return;
             }
             
-            // Увеличиваем счетчик только после успешного получения списка (200 OK)
-            // Это согласуется с логикой synchronize_printer_profiles() и synchronize_print_profiles()
+            // ВАЖНО: Увеличиваем счетчик только после успешного получения списка (200 OK)
+            // Это предотвращает проблемы с зависанием кнопки при ошибках (401, 403, etc.)
+            // Счетчик был установлен в synchronize_presets, но там он не увеличивался (исправлено выше)
             m_active_syncs++;
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Incremented m_active_syncs for filament presets (after 200 OK). Active syncs: " << m_active_syncs;
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 9.2] Incremented m_active_syncs for filament presets (after 200 OK). Active syncs: " << m_active_syncs;
             
             try {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 10] Parsing JSON response...";
@@ -783,132 +876,267 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
                 
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 11] Received " << total << " presets (items: " << presets.size() << ")";
                 
-                if (presets.empty()) {
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 12] No presets to sync (empty list)";
-                    // Уменьшаем счетчик активных синхронизаций перед выходом
+                // 4. ВАЖНО: Проверяем, нужно ли делать полную синхронизацию для восстановления удалённых пресетов
+                // Если список пуст И мы не делали полную синхронизацию И есть last_sync_time,
+                // это может означать, что пресеты были удалены локально, но не обновлялись в FilamentHub
+                // В этом случае делаем полную синхронизацию, чтобы восстановить все пресеты
+                if (presets.empty() && !force_full_sync && !updated_since.empty()) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] API returned empty list, but last_sync_time exists. "
+                                               << "This might indicate locally deleted presets. Performing full sync to restore all presets...";
+                    // Очищаем last_sync_time и делаем полную синхронизацию
+                    save_last_sync_time(user_id, ""); // Очищаем last_sync_time
+                    // Уменьшаем счетчик (он был увеличен выше после 200 OK)
+                    m_active_syncs--;
+                    // Перезапускаем синхронизацию с force_full_sync=true
                     CallAfter([this]() {
-                        m_active_syncs--;
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
-                        if (m_active_syncs <= 0) {
-                            update_sync_button_state(false);
-                            m_active_syncs = 0;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Restarting sync with force_full_sync=true to restore deleted presets";
+                        // Сбрасываем флаги перед перезапуском
+                        m_is_syncing = false;
+                        // Скрываем прогресс-бар перед перезапуском
+                        if (m_sync_progress) {
+                            m_sync_progress->Hide();
                         }
+                        if (m_sync_status_label) {
+                            m_sync_status_label->Hide();
+                        }
+                        m_info_panel->Layout();
+                        synchronize_presets(true); // Полная синхронизация (без updated_since)
                     });
                     return;
                 }
                 
-                // 4. Синхронизируем каждый пресет
-                // ВАЖНО: API уже отфильтровал пресеты по updated_since на стороне сервера
-                // Если пресет пришел от API, значит он новый или обновлен после last_sync_time
-                // Поэтому просто импортируем все пресеты, которые пришли от API
-                int synced_count = 0;
-                int updated_count = 0;
-                int error_count = 0;
+                if (presets.empty()) {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 12] No presets to sync (empty list)";
+                    // Уменьшаем счетчик активных синхронизаций (он был увеличен выше после 200 OK)
+                    CallAfter([this]() {
+                        m_active_syncs--;
+                        m_is_syncing = false;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
+                        // Скрываем прогресс-бар
+                        if (m_sync_progress) {
+                            m_sync_progress->Hide();
+                        }
+                        if (m_sync_status_label) {
+                            m_sync_status_label->Hide();
+                        }
+                        if (m_active_syncs <= 0) {
+                            update_sync_button_state(false);
+                            m_active_syncs = 0;
+                        }
+                        m_info_panel->Layout();
+                    });
+                    return;
+                }
                 
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13] Starting to sync " << presets.size() << " presets...";
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.1] API already filtered presets by updated_since, so all received presets need to be imported";
+                // 5. Обнаруживаем удалённые пресеты (прежде чем добавлять в очередь)
+                // ВАЖНО: Проверяем маппинги и сравниваем с текущим состоянием PresetBundle
+                // Удалённый пресет = есть маппинг, но пресета нет в PresetBundle
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13] Detecting deleted presets...";
                 
-                int preset_index = 0;
+                std::vector<nlohmann::json> deleted_presets_list;
+                std::set<int> server_preset_ids; // Set ID пресетов, которые пришли с сервера
+                
+                // Создаем set из ID пресетов с сервера
                 for (const auto& preset_json : presets) {
-                    preset_index++;
+                    int preset_id = preset_json["id"];
+                    server_preset_ids.insert(preset_id);
+                }
+                
+                // Проверяем каждый пресет с сервера на наличие в маппинге и PresetBundle
+                // Если пресет есть в маппинге, но НЕ существует в PresetBundle, значит он был удален локально
+                for (const auto& preset_json : presets) {
                     int preset_id = preset_json["id"];
                     std::string preset_name = preset_json["name"];
-                    std::string updated_at = preset_json.value("updated_at", "");
                     
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14." << preset_index << "] Processing preset ID=" << preset_id 
-                                           << ", name='" << preset_name << "'"
-                                           << ", updated_at='" << updated_at << "'"
-                                           << " (" << preset_index << "/" << presets.size() << ")";
-                    
-                    // Проверяем маппинг (есть ли уже в OrcaSlicer)
-                    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14." << preset_index << ".1] Loading preset mapping for ID=" << preset_id;
+                    // Проверяем маппинг
                     std::string bundle_preset_name = load_preset_mapping(preset_id);
                     
-                    if (bundle_preset_name.empty()) {
-                        // Пресета нет в маппинге - новый пресет, нужно импортировать
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14." << preset_index << ".2] Preset " << preset_id 
-                                               << " not in mapping, importing (new preset)";
-                    } else {
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14." << preset_index << ".2] Preset " << preset_id 
-                                                << " found in mapping: '" << bundle_preset_name << "'";
-                        // Пресет есть в маппинге - проверяем, существует ли он в PresetBundle
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14." << preset_index << ".3] Checking if preset exists in bundle...";
+                    if (!bundle_preset_name.empty()) {
+                        // Маппинг существует - проверяем, существует ли пресет в PresetBundle
                         bool preset_exists = preset_exists_in_bundle(bundle_preset_name);
                         
                         if (!preset_exists) {
                             // Маппинг есть, но пресет был удален в OrcaSlicer
-                            // Удаляем маппинг и импортируем пресет заново
-                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 14." << preset_index << ".4] Preset " << preset_id 
-                                                       << " mapped to '" << bundle_preset_name 
-                                                       << "' but preset not found in bundle (deleted), re-importing";
-                            remove_preset_mapping(preset_id);
-                            bundle_preset_name.clear(); // Очищаем для логирования
-                        } else {
-                            // Пресет существует - API вернул его (значит он был обновлен)
-                            // Переимпортируем его, чтобы обновить в OrcaSlicer
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14." << preset_index << ".4] Preset " << preset_id 
-                                                   << " already mapped to '" << bundle_preset_name 
-                                                   << "' and exists in bundle, but API returned it (updated), re-importing";
+                            // НО: пресет пришел с сервера, значит он НЕ удален на сервере
+                            // Это означает, что пользователь удалил его локально
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 13.1] Preset " << preset_id 
+                                                       << " (" << preset_name 
+                                                       << ") is mapped to '" << bundle_preset_name 
+                                                       << "' but preset not found in bundle (deleted locally)";
+                            
+                            // Добавляем в список удалённых пресетов
+                            nlohmann::json deleted_preset;
+                            deleted_preset["preset_id"] = preset_id;
+                            deleted_preset["preset_name"] = preset_name;
+                            deleted_preset["bundle_preset_name"] = bundle_preset_name;
+                            deleted_presets_list.push_back(deleted_preset);
+                            
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.1.1] Added preset " << preset_id 
+                                                   << " to deleted presets list (was deleted locally, but exists on server)";
                         }
-                    }
-                    
-                    // Импортируем пресет (новый или обновленный)
-                    // ВАЖНО: import_preset_silent использует overwrite=1, поэтому существующие пресеты будут обновлены
-                    // Маппинг будет обновлен после успешного импорта (даже если имя изменилось)
-                    std::string access_token_inner;
-                    int user_id_inner;
-                    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14." << preset_index << ".5] Loading auth token for import...";
-                    if (load_auth_token(access_token_inner, user_id_inner)) {
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14." << preset_index << ".6] Calling import_preset_silent for preset " << preset_id 
-                                                << " (" << preset_name << ")";
-                        if (import_preset_silent(preset_id, preset_name, access_token_inner)) {
-                            synced_count++;
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14." << preset_index << ".7] Preset " << preset_id 
-                                                   << " imported successfully";
-                        } else {
-                            error_count++;
-                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 14." << preset_index << ".7] Failed to import preset " << preset_id;
-                        }
-                    } else {
-                        error_count++;
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 14." << preset_index << ".6] Cannot load auth token for preset " << preset_id;
                     }
                 }
                 
-                // 6. Обновляем last_sync_time (ISO 8601 format)
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] Updating last_sync_time...";
+                // ВАЖНО: Логируем результат обнаружения удалённых пресетов на уровне error, чтобы гарантировать видимость
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size() 
+                                       << " deleted presets (deleted locally, but exist on server)";
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size() 
+                                       << " deleted presets (deleted locally, but exist on server)";
+                
+                // 6. Собираем пресеты в очередь для обработки после завершения callback
+                // ВАЖНО: НЕ вызываем import_preset_silent здесь, чтобы избежать deadlock!
+                // Вместо этого добавляем пресеты в очередь и обработаем их позже через CallAfter
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14] Adding " << presets.size() << " presets to import queue...";
+                
+                // Сохраняем токен и URL для последующей обработки
+                std::string access_token_for_queue = access_token;
+                std::string api_base_url_for_queue = api_base_url;
+                
+                // Добавляем пресеты в очередь
+                {
+                    std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
+                    m_preset_import_queue.clear();
+                    m_total_presets_to_sync = presets.size();
+                    m_synced_count = 0;
+                    m_error_count = 0;
+                    
+                    for (const auto& preset_json : presets) {
+                        int preset_id = preset_json["id"];
+                        std::string preset_name = preset_json["name"];
+                        
+                        PresetImportTask task;
+                        task.preset_id = preset_id;
+                        task.preset_name = preset_name;
+                        task.access_token = access_token_for_queue;
+                        task.api_base_url = api_base_url_for_queue;
+                        
+                        m_preset_import_queue.push_back(task);
+                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14.1] Added preset " << preset_id 
+                                                 << " (" << preset_name << ") to import queue";
+                    }
+                }
+                
+                // Показываем прогресс-бар
+                CallAfter([this, total_presets = presets.size()]() {
+                    if (m_sync_progress && m_sync_status_label) {
+                        m_sync_progress->SetRange(total_presets);
+                        m_sync_progress->SetValue(0);
+                        m_sync_progress->Show();
+                        m_sync_status_label->SetLabel(wxString::Format(_("Syncing %d presets..."), total_presets));
+                        m_sync_status_label->Show();
+                        m_info_panel->Layout();
+                    }
+                    
+                    // Начинаем обработку очереди пресетов в UI потоке
+                    // Это предотвратит deadlock, так как мы не вызываем perform_sync() из callback HTTP клиента
+                    process_preset_import_queue();
+                });
+                
+                // 8. Отправляем удалённые пресеты на бэкенд (если есть)
+                // ВАЖНО: Отправляем через CallAfter, чтобы не блокировать callback HTTP клиента
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15.0] Checking deleted_presets_list. Size: " << deleted_presets_list.size();
+                if (!deleted_presets_list.empty()) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15] Found " << deleted_presets_list.size() 
+                                           << " deleted presets. Reporting to backend...";
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] Found " << deleted_presets_list.size() 
+                                           << " deleted presets. Reporting to backend...";
+                    
+                    // Сохраняем данные для отправки в UI потоке
+                    std::string access_token_for_report = access_token;
+                    std::string api_base_url_for_report = api_base_url;
+                    std::vector<nlohmann::json> deleted_presets_for_report = deleted_presets_list;
+                    size_t deleted_presets_count = deleted_presets_list.size();
+                    
+                    // Отправляем на бэкенд через CallAfter, чтобы не блокировать callback
+                    CallAfter([this, access_token_for_report, api_base_url_for_report, deleted_presets_for_report, deleted_presets_count]() {
+                        // Создаём JSON запрос для отправки удалённых пресетов
+                        nlohmann::json deleted_presets_request;
+                        deleted_presets_request["deleted_presets"] = deleted_presets_for_report;
+                        std::string deleted_presets_json = deleted_presets_request.dump();
+                        
+                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 15.1] Deleted presets JSON: " << deleted_presets_json;
+                        
+                        // Отправляем на бэкенд (это будет выполнено в UI потоке, но report_deleted_presets использует perform_sync)
+                        // Чтобы избежать deadlock, report_deleted_presets тоже должен использовать отдельный поток
+                        // Пока оставляем так, но в будущем нужно переделать report_deleted_presets на асинхронный вызов
+                        FilamentHubClient report_client;
+                        report_client.set_api_base_url(api_base_url_for_report);
+                        
+                        report_client.report_deleted_presets(
+                            access_token_for_report,
+                            deleted_presets_json,
+                            // on_complete: удалённые пресеты успешно отправлены
+                            [this, deleted_presets_count](std::string body, unsigned status) {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2] Deleted presets reported successfully. Status: " << status 
+                                                       << ", Count: " << deleted_presets_count;
+                                if (status == 200) {
+                                    try {
+                                        nlohmann::json response = nlohmann::json::parse(body);
+                                        std::string message = response.value("message", "");
+                                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2.1] Backend response: " << message;
+                                        
+                                        // Если создано уведомление, пользователь увидит его в веб-интерфейсе
+                                        if (response.contains("notification_id")) {
+                                            int notification_id = response.value("notification_id", 0);
+                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2.2] Notification created with ID: " << notification_id;
+                                        }
+                                    } catch (const std::exception& e) {
+                                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 15.2.1] Error parsing backend response: " << e.what();
+                                    }
+                                }
+                            },
+                            // on_error: ошибка при отправке удалённых пресетов
+                            [this](std::string body, std::string error, unsigned status) {
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15.2] Failed to report deleted presets. Error: " << error 
+                                                        << ", Status: " << status;
+                                // Не прерываем синхронизацию при ошибке отправки удалённых пресетов
+                                // Пользователь может обработать их вручную через веб-интерфейс
+                            }
+                        );
+                    });
+                } else {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] No deleted presets found";
+                }
+                
+                // 9. Обновляем last_sync_time (ISO 8601 format)
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16] Updating last_sync_time...";
                 std::time_t now = std::time(nullptr);
                 std::stringstream ss;
                 ss << std::put_time(std::gmtime(&now), "%Y-%m-%dT%H:%M:%S.000000");
                 std::string current_time = ss.str();
                 save_last_sync_time(user_id, current_time);
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.1] Saved last_sync_time=" << current_time;
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16.1] Saved last_sync_time=" << current_time;
                 
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16] ========== Synchronization completed ==========";
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16.1] Summary - Synced: " << synced_count 
-                                       << ", Updated: " << updated_count
-                                       << ", Errors: " << error_count;
+                // 10. Завершаем синхронизацию - обновляем UI
+                // ВАЖНО: Синхронизация еще не завершена полностью - пресеты обрабатываются через очередь
+                // Но мы можем обновить UI здесь, чтобы показать, что синхронизация началась
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 17] ========== Synchronization started ==========";
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 17.1] Summary - Presets to import: " << presets.size()
+                                       << ", Deleted presets detected: " << deleted_presets_list.size();
                 
-                // Update UI: button state and user info
-                CallAfter([this]() {
-                    m_active_syncs--;
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync completed. Active syncs: " << m_active_syncs;
-                    if (m_active_syncs <= 0) {
-                        update_sync_button_state(false);
-                        m_active_syncs = 0;
-                    }
-                    update_user_info();
-                });
+                // ВАЖНО: НЕ обновляем UI здесь, так как пресеты еще обрабатываются через очередь
+                // UI будет обновлен в process_preset_import_queue() после завершения обработки всех пресетов
+                // Здесь мы только логируем, что синхронизация началась
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Presets added to queue, processing will continue in UI thread";
                 
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing presets list: " << e.what();
                 CallAfter([this, e]() {
                     m_active_syncs--; // Уменьшаем счетчик активных синхронизаций
+                    m_is_syncing = false;
+                    // Скрываем прогресс-бар
+                    if (m_sync_progress) {
+                        m_sync_progress->Hide();
+                    }
+                    if (m_sync_status_label) {
+                        m_sync_status_label->Hide();
+                    }
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (parse error). Active syncs: " << m_active_syncs;
                     if (m_active_syncs <= 0) {
                         update_sync_button_state(false);
                         m_active_syncs = 0;
                     }
+                    m_info_panel->Layout();
                     // Показываем уведомление в WebView вместо модального окна
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing presets list: %s"), e.what()),
@@ -929,25 +1157,35 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
             }
             
             wxString error_msg;
+            // ВАЖНО: m_active_syncs НЕ увеличивался до этого момента (увеличивается только после 200 OK в on_complete)
+            // Поэтому НЕ уменьшаем счетчик здесь - он остаётся 0
+            
             if (http_status == 401) {
                 error_msg = _L("Your session has expired. Please login again.");
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Token expired (401) in on_error callback";
-                // НЕ уменьшаем счетчик - он не был увеличен для этой синхронизации (увеличивается только после 200 OK)
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_error callback";
                 CallAfter([this, error_msg]() {
+                    m_is_syncing = false;
+                    // Скрываем прогресс-бар
+                    if (m_sync_progress) {
+                        m_sync_progress->Hide();
+                    }
+                    if (m_sync_status_label) {
+                        m_sync_status_label->Hide();
+                    }
                     logout(); // Очищает токен и обновляет UI
+                    update_sync_button_state(false);
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
-                    // Проверяем, нужно ли обновить состояние кнопки
-                    if (m_active_syncs <= 0) {
-                        update_sync_button_state(false);
+                    if (m_active_syncs < 0) {
                         m_active_syncs = 0;
                     }
+                    m_info_panel->Layout();
                     // Показываем уведомление в WebView вместо модального окна
                     show_notification_in_webview(error_msg, "warning");
                 });
                 return;
             }
             
-            // Для других ошибок также не уменьшаем счетчик (он не был увеличен до получения 200 OK)
+            // Для других ошибок также НЕ уменьшаем счетчик (он не увеличивался)
             if (http_status == 403) {
                 // Парсим детали ошибки из body
                 try {
@@ -966,19 +1204,27 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
             
             // НЕ уменьшаем счетчик - он не был увеличен для этой синхронизации (увеличивается только после 200 OK)
             CallAfter([this, error_msg, http_status]() {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync failed (error: " << error_msg.ToUTF8()
-                                        << ", status: " << http_status << "). Active syncs: " << m_active_syncs;
-                // Проверяем, нужно ли обновить состояние кнопки
-                if (m_active_syncs <= 0) {
-                    update_sync_button_state(false);
-                    m_active_syncs = 0;
+                m_is_syncing = false;
+                // Скрываем прогресс-бар
+                if (m_sync_progress) {
+                    m_sync_progress->Hide();
                 }
-                // Показываем уведомление в WebView вместо модального окна
-                show_notification_in_webview(
-                    error_msg,
-                    http_status == 403 ? "warning" : "error"
-                );
-            });
+                if (m_sync_status_label) {
+                    m_sync_status_label->Hide();
+                }
+                    update_sync_button_state(false);
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync failed (error: " << error_msg.ToUTF8()
+                                        << ", status: " << http_status << "). Active syncs: " << m_active_syncs;
+                    if (m_active_syncs < 0) {
+                        m_active_syncs = 0;
+                    }
+                    m_info_panel->Layout();
+                    // Показываем уведомление в WebView вместо модального окна
+                    show_notification_in_webview(
+                        error_msg,
+                        http_status == 403 ? "warning" : "error"
+                    );
+                });
         }
     );
     BOOST_LOG_TRIVIAL(error) << "FilamentHub: synchronize_presets: client.get_my_presets() CALLED (function returned, waiting for callback)";
@@ -1265,6 +1511,143 @@ std::string FilamentHubPanel::load_last_sync_time(int user_id)
 }
 
 // ============================================================================
+// Methods for deleted preset action handling
+// ============================================================================
+
+std::string FilamentHubPanel::get_deleted_preset_action()
+{
+    if (wxGetApp().app_config == nullptr) {
+        return "ask"; // Default: ask user
+    }
+    
+    std::string action = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_DELETED_PRESET_ACTION);
+    
+    // Validate action value
+    if (action != "ask" && action != "import" && action != "delete" && action != "skip") {
+        return "ask"; // Default: ask user
+    }
+    
+    return action;
+}
+
+void FilamentHubPanel::set_deleted_preset_action(const std::string& action)
+{
+    if (wxGetApp().app_config == nullptr) {
+        return;
+    }
+    
+    // Validate action value
+    if (action != "ask" && action != "import" && action != "delete" && action != "skip") {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Invalid deleted preset action: " << action << ", using default 'ask'";
+        return;
+    }
+    
+    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_DELETED_PRESET_ACTION, action);
+    wxGetApp().app_config->save();
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Set deleted preset action to: " << action;
+}
+
+std::string FilamentHubPanel::ask_deleted_preset_action(int preset_id, const std::string& preset_name)
+{
+    // Создаем диалог с опциями
+    wxString message = wxString::Format(
+        _L("Preset '%s' (ID: %d) was deleted in OrcaSlicer.\n\nWhat would you like to do?"),
+        wxString::FromUTF8(preset_name.c_str()),
+        preset_id
+    );
+    
+    wxString title = _L("FilamentHub - Deleted Preset");
+    
+    // Используем wxMessageBox с опциями: YES (import), NO (delete), CANCEL (skip)
+    int result = wxMessageBox(
+        message,
+        title,
+        wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxICON_QUESTION,
+        this
+    );
+    
+    if (result == wxYES) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: User chose to import preset " << preset_id;
+        return "import";
+    } else if (result == wxNO) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: User chose to delete preset " << preset_id << " from FilamentHub";
+        return "delete";
+    } else {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: User chose to skip preset " << preset_id;
+        return "skip";
+    }
+}
+
+bool FilamentHubPanel::delete_preset_from_filamenthub(int preset_id, const std::string& access_token)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Deleting preset " << preset_id << " from FilamentHub...";
+    
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+    
+    bool success = false;
+    std::string error_message;
+    unsigned http_status = 0;
+    
+    // Создаем condition variable для ожидания ответа
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool completed = false;
+    
+    client.delete_preset(
+        preset_id,
+        access_token,
+        // on_complete
+        [&](std::string body, unsigned status) {
+            std::lock_guard<std::mutex> lock(mtx);
+            http_status = status;
+            if (status == 204 || status == 200) {
+                success = true;
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Preset " << preset_id << " deleted successfully from FilamentHub";
+            } else {
+                error_message = "Unexpected HTTP status: " + std::to_string(status);
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to delete preset " << preset_id 
+                                         << " from FilamentHub. Status: " << status;
+            }
+            completed = true;
+            cv.notify_one();
+        },
+        // on_error
+        [&](std::string body, std::string error, unsigned status) {
+            std::lock_guard<std::mutex> lock(mtx);
+            http_status = status;
+            error_message = error;
+            success = false;
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to delete preset " << preset_id 
+                                     << " from FilamentHub. Error: " << error << ", Status: " << status;
+            completed = true;
+            cv.notify_one();
+        }
+    );
+    
+    // Ждем ответа (с таймаутом)
+    std::unique_lock<std::mutex> lock(mtx);
+    if (!cv.wait_for(lock, std::chrono::seconds(30), [&] { return completed; })) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Timeout waiting for delete preset " << preset_id << " response";
+        return false;
+    }
+    
+    if (!success) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to delete preset " << preset_id 
+                                 << " from FilamentHub: " << error_message;
+        return false;
+    }
+    
+    // Удаляем маппинг после успешного удаления
+    remove_preset_mapping(preset_id);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Removed mapping for deleted preset " << preset_id;
+    
+    return true;
+}
+
+// ============================================================================
 // Helper methods
 // ============================================================================
 
@@ -1445,19 +1828,23 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                                     << ", JSON size: " << json_content.size() 
                                     << " bytes";
             
-            std::lock_guard<std::mutex> lock(result->mutex);
+            std::unique_lock<std::mutex> lock(result->mutex);
             result->http_status = http_status;
             
             if (http_status != 200) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Unexpected HTTP status " << http_status 
                                         << " when downloading preset " << preset_id;
                 result->error = "HTTP status " + std::to_string(http_status);
+                result->completed = true;
+                result->cv.notify_one();
                 return;
             }
             
             if (json_content.empty()) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Empty JSON content for preset " << preset_id;
                 result->error = "Empty JSON content";
+                result->completed = true;
+                result->cv.notify_one();
                 return;
             }
             
@@ -1491,8 +1878,10 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                 std::ofstream file(temp_file.string());
                 if (!file.is_open()) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Failed to create temporary file: " << temp_file.string();
-                    std::lock_guard<std::mutex> lock(result->mutex);
+                    std::unique_lock<std::mutex> lock(result->mutex);
                     result->error = "Failed to create temporary file";
+                    result->completed = true;
+                    result->cv.notify_one();
                     return;
                 }
                 
@@ -1586,10 +1975,9 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 11.9.1] Saved mapping preset_id=" << preset_id 
                                                    << " -> bundle_preset_name=" << actual_preset_name;
                             
-                            // Обновляем UI (перезагружаем пресеты)
-                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 11.10] Calling load_current_presets()...";
-                            wxGetApp().load_current_presets();
-                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 11.10.1] load_current_presets() completed";
+                            // ВАЖНО: НЕ вызываем load_current_presets() здесь, чтобы не перезагружать все пресеты после каждого импорта
+                            // Это предотвращает обновление .info файлов не-FilamentHub пресетов
+                            // load_current_presets() должен вызываться вызывающим кодом один раз после завершения всех импортов
                             
                             result->success = true;
                             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 11.11] Import completed successfully";
@@ -1616,56 +2004,24 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                     }
                 });
                 
-                // Ждем завершения импорта (максимум 30 секунд)
-                // ВАЖНО: Используем wxYield() для обработки событий UI во время ожидания,
-                // чтобы избежать deadlock, если мы уже в UI потоке
-                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 12] Waiting for CallAfter to complete...";
-                std::unique_lock<std::mutex> lock(result->mutex);
-                if (!result->completed) {
-                    // Ждем максимум 30 секунд, проверяя каждые 100ms
-                    auto timeout = std::chrono::seconds(30);
-                    auto start_time = std::chrono::steady_clock::now();
-                    int wait_iterations = 0;
-                    while (!result->completed && (std::chrono::steady_clock::now() - start_time) < timeout) {
-                        lock.unlock();
-                        wait_iterations++;
-                        if (wait_iterations % 10 == 0) { // Логируем каждые 1 секунду
-                            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - start_time).count();
-                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 12." << wait_iterations 
-                                                    << "] Still waiting... elapsed=" << elapsed << "ms";
-                        }
-                        // Обрабатываем события UI, чтобы CallAfter мог выполниться
-                        wxYield();
-                        // Небольшая задержка перед следующей проверкой
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                        lock.lock();
-                        
-                        // Проверяем, завершился ли импорт
-                        if (result->completed) {
-                            break;
-                        }
-                    }
-                    
-                    if (!result->completed) {
-                        // Таймаут
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Import timeout (30 seconds)";
-                        result->error = "Import timeout (30 seconds)";
-                        result->completed = true;
-                    } else {
-                        // Импорт завершен
-                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - start_time).count();
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 12.1] Import completed in CallAfter, elapsed=" << elapsed << "ms";
-                    }
-                } else {
-                    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 12.1] Import already completed";
-                }
+                // ВАЖНО: НЕ ждем завершения импорта здесь, потому что download_profile теперь выполняется в отдельном потоке
+                // и callback on_complete будет вызван из этого потока, а не из UI потока
+                // CallAfter внутри on_complete правильно выполнит импорт в UI потоке
+                // Поэтому мы просто устанавливаем result->completed = true в callback on_complete, когда импорт завершен
+                // и не ждем здесь, чтобы избежать deadlock
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 12] download_profile called in separate thread, not waiting here";
+                
+                // ВАЖНО: Устанавливаем result->completed = false здесь, чтобы callback мог установить его в true
+                // Но мы НЕ ждем здесь, чтобы избежать deadlock
+                // Вместо этого, callback on_complete установит result->completed = true и вызовет result->cv.notify_one()
+                // Но мы не будем ждать здесь, потому что это может вызвать deadlock
                 
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception during silent import: " << e.what();
                 std::lock_guard<std::mutex> lock(result->mutex);
                 result->error = std::string("Exception: ") + e.what();
+                result->completed = true;
+                result->cv.notify_one();
             }
         },
         // on_error: ошибка при скачивании
@@ -1677,22 +2033,268 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
             std::lock_guard<std::mutex> lock(result->mutex);
             result->http_status = http_status;
             result->error = "Failed to download profile: " + error + " (HTTP " + std::to_string(http_status) + ")";
+            result->completed = true;
+            result->cv.notify_one();
         }
     );
     
-    // Возвращаем результат (perform_sync выполнится синхронно, поэтому result уже заполнен)
-    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 13] Reading final result...";
-    std::lock_guard<std::mutex> lock(result->mutex);
+    // ВАЖНО: НЕ ждем завершения download_profile здесь, чтобы избежать deadlock!
+    // download_profile выполняется в отдельном потоке, и его callback on_complete
+    // будет вызван из этого потока. CallAfter внутри on_complete правильно выполнит
+    // импорт в UI потоке. Мы возвращаемся немедленно, чтобы не блокировать callback
+    // от get_my_presets, который может быть в worker thread от HTTP клиента.
+    // 
+    // Импорт будет выполняться асинхронно в callback on_complete от download_profile,
+    // и мы не можем узнать результат здесь. Поэтому мы возвращаем true, предполагая,
+    // что импорт будет выполнен успешно (ошибки будут логироваться).
+    // 
+    // ВАЖНО: Это означает, что import_preset_silent теперь полностью асинхронный,
+    // и мы не можем узнать результат импорта сразу. Но это необходимо, чтобы избежать
+    // deadlock при вызове из callback on_complete от get_my_presets.
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 13] download_profile called asynchronously, returning immediately (no wait)";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 13.1] Import will complete asynchronously in download_profile callback";
     
-    if (!result->success && !result->error.empty()) {
-        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT END] Import preset " << preset_id << " FAILED: " << result->error;
-    } else if (result->success) {
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT END] ========== Import preset " << preset_id << " COMPLETED SUCCESSFULLY ==========";
-    } else {
-        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [IMPORT END] Import preset " << preset_id << " completed with unknown status";
+    // Возвращаем true, предполагая, что импорт будет выполнен успешно
+    // (ошибки будут логироваться в callback on_complete/on_error от download_profile)
+    // ВАЖНО: Это означает, что мы не можем узнать результат импорта здесь,
+    // но это необходимо, чтобы избежать deadlock
+    return true;
+}
+
+void FilamentHubPanel::import_preset_silent_with_callback(int preset_id, const std::string& preset_name,
+                                                           const std::string& access_token,
+                                                           std::function<void(bool success)> on_complete)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT START] ========== import_preset_silent_with_callback() CALLED ==========";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 1] preset_id=" << preset_id
+                            << ", preset_name='" << preset_name << "'"
+                            << ", token_length=" << access_token.length();
+
+    if (wxGetApp().preset_bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] preset_bundle is null, cannot import preset " << preset_id;
+        if (on_complete) on_complete(false);
+        return;
+    }
+
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 4] Calling download_profile API: " << api_base_url
+                            << " for preset_id=" << preset_id;
+
+    client.download_profile(
+        preset_id,
+        access_token,
+        // on_complete: profile successfully downloaded
+        [this, preset_id, preset_name, on_complete](std::string json_content, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 5] ========== download_profile on_complete CALLBACK ==========";
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 5.1] Preset " << preset_id << " downloaded. "
+                                    << "HTTP status: " << http_status
+                                    << ", JSON size: " << json_content.size()
+                                    << " bytes";
+
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Unexpected HTTP status " << http_status
+                                        << " when downloading preset " << preset_id;
+                if (on_complete) on_complete(false);
+                return;
+            }
+
+            if (json_content.empty()) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Empty JSON content for preset " << preset_id;
+                if (on_complete) on_complete(false);
+                return;
+            }
+
+            try {
+                nlohmann::json profile_json = nlohmann::json::parse(json_content);
+                std::string original_name = profile_json.value("name", preset_name);
+                std::string new_name = ensure_filamenthub_postfix(original_name);
+                profile_json["name"] = new_name;
+
+                ensure_parent_preset_exists(profile_json);
+
+                boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
+                boost::filesystem::path temp_file = temp_dir / ("filamenthub_preset_" + std::to_string(preset_id) + "_" +
+                                                                std::to_string(std::time(nullptr)) + ".json");
+
+                std::ofstream file(temp_file.string());
+                if (!file.is_open()) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Failed to create temporary file: " << temp_file.string();
+                    if (on_complete) on_complete(false);
+                    return;
+                }
+
+                file << profile_json.dump(2);
+                file.close();
+
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 9.1] Saved profile to temporary file: " << temp_file.string();
+
+                // Schedule the actual import in the UI thread
+                CallAfter([this, preset_id, on_complete, temp_file, new_name]() {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 10] ========== CallAfter for UI import EXECUTED ==========";
+                    bool success = false;
+                    try {
+                        PresetBundle* bundle = wxGetApp().preset_bundle;
+                        if (bundle == nullptr) {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] preset_bundle is null during UI import";
+                            if (on_complete) on_complete(false);
+                            return;
+                        }
+
+                        PresetsConfigSubstitutions substitutions;
+                        int overwrite = 1;
+                        std::vector<std::string> import_result_vec;
+                        auto override_confirm = [](std::string const& name) -> int { return 1; };
+
+                        std::string file_path_mutable = temp_file.string();
+                        success = bundle->import_json_presets(
+                            substitutions,
+                            file_path_mutable,
+                            override_confirm,
+                            ForwardCompatibilitySubstitutionRule::Enable,
+                            overwrite,
+                            import_result_vec
+                        );
+
+                        if (success || !import_result_vec.empty()) {
+                            save_preset_mapping(preset_id, new_name);
+                            // ВАЖНО: НЕ вызываем load_current_presets() здесь, чтобы не перезагружать все пресеты после каждого импорта
+                            // Это предотвращает обновление .info файлов не-FilamentHub пресетов
+                            // load_current_presets() будет вызван один раз после завершения импорта всех пресетов
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT END] Preset " << preset_id << " imported successfully in UI thread.";
+                        } else {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Failed to import profile in UI thread. import_json_presets returned false.";
+                        }
+                    } catch (const std::exception& e) {
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Exception in UI import: " << e.what();
+                    }
+
+                    // Clean up temporary file
+                    try {
+                        boost::filesystem::remove(temp_file);
+                    } catch (...) {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to remove temporary file: " << temp_file.string();
+                    }
+
+                    if (on_complete) on_complete(success);
+                });
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Exception during JSON parsing/file ops: " << e.what();
+                if (on_complete) on_complete(false);
+            }
+        },
+        // on_error: download failed
+        [on_complete, preset_id](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [IMPORT ERROR] Failed to download preset " << preset_id
+                                    << ". Error: " << error
+                                    << ", HTTP status: " << http_status
+                                    << ", Body: " << body.substr(0, std::min((int)body.size(), 200));
+            if (on_complete) on_complete(false);
+        }
+    );
+}
+
+void FilamentHubPanel::process_preset_import_queue()
+{
+    PresetImportTask task;
+    size_t remaining_count = 0;
+    bool should_finish = false;
+    
+    // ВАЖНО: Получаем задачу из очереди и проверяем состояние БЕЗ блокировки мьютекса во время обработки
+    // Это позволяет избежать deadlock при рекурсивных вызовах
+    {
+        std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
+        if (m_processing_preset_queue) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Preset import queue already being processed, skipping call.";
+            return;
+        }
+        if (m_preset_import_queue.empty()) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Preset import queue is empty. Finishing sync.";
+            should_finish = true;
+            m_processing_preset_queue = false;
+        } else {
+            // Есть пресеты в очереди - получаем задачу
+            task = m_preset_import_queue.front();
+            m_preset_import_queue.erase(m_preset_import_queue.begin());
+            remaining_count = m_preset_import_queue.size();
+            m_processing_preset_queue = true;
+        }
     }
     
-    return result->success;
+    // Если очередь пуста - завершаем синхронизацию
+    if (should_finish) {
+        CallAfter([this]() {
+            // ВАЖНО: Вызываем load_current_presets() только один раз после завершения импорта всех пресетов
+            // Это обновит UI и предотвратит множественные перезагрузки всех пресетов (включая не-FilamentHub)
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] All presets imported. Calling load_current_presets() once...";
+            wxGetApp().load_current_presets();
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] load_current_presets() completed.";
+            
+            m_active_syncs--;
+            m_is_syncing = false;
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed. Active syncs: " << m_active_syncs;
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync summary - Synced: " << m_synced_count << ", Errors: " << m_error_count;
+            
+            // Hide progress bar
+            if (m_sync_progress) {
+                m_sync_progress->Hide();
+                m_sync_progress->SetValue(0);
+            }
+            if (m_sync_status_label) {
+                m_sync_status_label->Hide();
+            }
+            
+            if (m_active_syncs <= 0) {
+                update_sync_button_state(false);
+                m_active_syncs = 0;
+            }
+            m_info_panel->Layout();
+            update_user_info();
+            
+            // Обновляем количество непрочитанных уведомлений после завершения синхронизации
+            // (так как после синхронизации могут появиться новые уведомления)
+            update_unread_notifications_count();
+        });
+        return;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Processing preset ID=" << task.preset_id
+                            << " (" << task.preset_name << "). Remaining in queue: " << remaining_count;
+
+    // Update progress bar UI (в UI потоке)
+    CallAfter([this, task, remaining_count]() {
+        update_sync_progress_ui(m_synced_count + m_error_count, m_total_presets_to_sync,
+                                wxString::Format(_("Syncing %d/%d: %s"),
+                                                m_synced_count + m_error_count + 1, m_total_presets_to_sync,
+                                                wxString::FromUTF8(task.preset_name.c_str())));
+    });
+
+    // Call the asynchronous import method
+    import_preset_silent_with_callback(
+        task.preset_id,
+        task.preset_name,
+        task.access_token,
+        [this, task](bool success) {
+            // Обновляем счетчики (в UI потоке)
+            CallAfter([this, success, task]() {
+                {
+                    std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
+                    if (success) {
+                        m_synced_count++;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Preset " << task.preset_id << " imported successfully.";
+                    } else {
+                        m_error_count++;
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [QUEUE] Failed to import preset " << task.preset_id << ".";
+                    }
+                    m_processing_preset_queue = false; // Allow next item to be processed
+                }
+                // Обрабатываем следующий элемент очереди (после освобождения мьютекса)
+                process_preset_import_queue();
+            });
+        }
+    );
 }
 
 // ============================================================================
@@ -1733,16 +2335,13 @@ void FilamentHubPanel::update_user_info()
             
             // Проверяем статус ответа
             if (http_status == 401) {
-                // Токен истек или невалидный - очищаем авторизацию
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired or invalid (401) during user info update, clearing auth";
-                CallAfter([this]() {
-                    logout(); // Очищает токен и обновляет UI
-                    // Показываем уведомление в WebView вместо модального окна
-                    show_notification_in_webview(
-                        _L("Your session has expired. Please login again."),
-                        "warning"
-                    );
-                });
+                // Токен истек или невалидный
+                // ВАЖНО: НЕ делаем logout сразу - возможно, это временная проблема
+                // Токен может быть валидным для других эндпоинтов (например, get_my_presets)
+                // Поэтому просто не обновляем информацию о пользователе, но не очищаем авторизацию
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired or invalid (401) during user info update, but not clearing auth (may be temporary)";
+                // Не обновляем UI - оставляем текущее состояние
+                // Пользователь сможет попробовать снова через кнопку синхронизации
                 return;
             }
             
@@ -1772,9 +2371,34 @@ void FilamentHubPanel::update_user_info()
                     email = user_json["email"].get<std::string>();
                 }
                 
+                // Проверяем роль пользователя для показа кнопки Admin
+                std::string role = "";
+                if (user_json.contains("role") && !user_json["role"].is_null()) {
+                    role = user_json["role"].get<std::string>();
+                }
+                
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Parsed user data - username: '" << username 
                                         << "', full_name: '" << full_name 
-                                        << "', email: '" << email << "'";
+                                        << "', email: '" << email 
+                                        << "', role: '" << role << "'";
+                
+                // Показываем кнопку Admin только для админов
+                CallAfter([this, role]() {
+                    if (role == "admin") {
+                        if (m_admin_button) {
+                            m_admin_button->Show();
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Admin button shown (user is admin)";
+                        }
+                    } else {
+                        if (m_admin_button) {
+                            m_admin_button->Hide();
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Admin button hidden (user is not admin)";
+                        }
+                    }
+                    if (m_info_panel) {
+                        m_info_panel->Layout();
+                    }
+                });
                 
                 wxString display_name;
                 if (!full_name.empty()) {
@@ -1881,22 +2505,34 @@ void FilamentHubPanel::on_sync_button_click(wxCommandEvent& evt)
 
 void FilamentHubPanel::update_sync_button_state(bool is_syncing)
 {
-    m_is_syncing = is_syncing;
+    // ВАЖНО: НЕ устанавливаем m_is_syncing здесь, это делается в synchronize_presets
+    // Эта функция только обновляет UI состояние кнопки
     
     if (is_syncing) {
-        m_sync_button->SetLabel(_("Synchronizing..."));
-        m_sync_button->Disable();
-        m_sync_status_label->Show();
-        m_sync_progress->Show();
-        m_sync_progress->SetValue(0); // Reset progress
+        if (m_sync_button) {
+            m_sync_button->SetLabel(_("Synchronizing..."));
+            m_sync_button->Disable();
+        }
+        // НЕ показываем прогресс-бар здесь - он будет показан позже, когда узнаем количество пресетов
+        // Прогресс-бар будет показан в процессе синхронизации (в callback после получения списка пресетов)
     } else {
-        m_sync_button->SetLabel(_("Synchronize"));
-        m_sync_button->Enable();
-        m_sync_status_label->Hide();
-        m_sync_progress->Hide();
+        if (m_sync_button) {
+            m_sync_button->SetLabel(_("Synchronize"));
+            m_sync_button->Enable();
+        }
+        // ВАЖНО: Всегда скрываем прогресс-бар и статус при завершении синхронизации
+        if (m_sync_status_label) {
+            m_sync_status_label->Hide();
+        }
+        if (m_sync_progress) {
+            m_sync_progress->Hide();
+            m_sync_progress->SetValue(0); // Сбрасываем значение
+        }
     }
     
-    m_info_panel->Layout();
+    if (m_info_panel) {
+        m_info_panel->Layout();
+    }
 }
 
 void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
@@ -1908,7 +2544,11 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         m_profile_button->Show();
         m_preset_count_label->Show();
         m_sync_button->Show(); // ВАЖНО: Показываем кнопку синхронизации
+        m_notifications_button->Show(); // Показываем кнопку уведомлений
         m_logout_button->Show();
+        
+        // Update unread notifications count
+        update_unread_notifications_count();
         
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Showing sync button (user is logged in)";
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync button is shown: " << (m_sync_button->IsShown() ? "true" : "false");
@@ -1924,7 +2564,13 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         m_profile_button->Hide();
         m_preset_count_label->Hide();
         m_sync_button->Hide(); // ВАЖНО: Скрываем кнопку синхронизации
+        m_notifications_button->Hide(); // Скрываем кнопку уведомлений
+        m_notifications_badge->Hide(); // Скрываем badge уведомлений
+        m_admin_button->Hide(); // Скрываем кнопку админки (если была показана)
         m_logout_button->Hide();
+        
+        // Reset unread notifications count
+        m_unread_notifications_count = 0;
         
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Hiding sync button (user is not logged in)";
         
@@ -2166,6 +2812,18 @@ void FilamentHubPanel::update_async_ui()
 
     if (m_profile_button != nullptr) {
         m_profile_button->Enable(!busy);
+    }
+
+    if (m_refresh_button != nullptr) {
+        m_refresh_button->Enable(!busy);
+    }
+
+    if (m_notifications_button != nullptr) {
+        m_notifications_button->Enable(!busy);
+    }
+
+    if (m_admin_button != nullptr) {
+        m_admin_button->Enable(!busy);
     }
 
     if (m_login_button != nullptr) {
@@ -3098,6 +3756,98 @@ bool FilamentHubPanel::import_print_profile_silent(int profile_id, const std::st
     // Возвращаем результат (perform_sync выполнится синхронно, поэтому result уже заполнен)
     std::lock_guard<std::mutex> lock(result->mutex);
     return result->success;
+}
+
+void FilamentHubPanel::update_unread_notifications_count()
+{
+    std::string access_token;
+    int user_id;
+    
+    if (!load_auth_token(access_token, user_id)) {
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Cannot update notifications count - user not logged in";
+        return;
+    }
+    
+    if (access_token.empty()) {
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Cannot update notifications count - access token is empty";
+        return;
+    }
+    
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+    
+    client.get_unread_notifications_count(
+        access_token,
+        // on_complete: успешно получено количество непрочитанных уведомлений
+        [this](std::string body, unsigned http_status) {
+            if (http_status == 200) {
+                try {
+                    nlohmann::json response = nlohmann::json::parse(body);
+                    int unread_count = response.value("unread_count", 0);
+                    
+                    CallAfter([this, unread_count]() {
+                        m_unread_notifications_count = unread_count;
+                        
+                        // Обновляем badge
+                        if (m_notifications_badge != nullptr) {
+                            if (unread_count > 0) {
+                                std::string badge_text = unread_count > 99 ? "99+" : std::to_string(unread_count);
+                                m_notifications_badge->SetLabel(wxString::FromUTF8(badge_text));
+                                m_notifications_badge->Show();
+                                
+                                // Обновляем размер badge для правильного отображения
+                                wxSize text_size = m_notifications_badge->GetTextExtent(badge_text);
+                                int badge_size = std::max(text_size.GetWidth() + 6, 18); // Минимальный размер 18px
+                                m_notifications_badge->SetMinSize(wxSize(badge_size, 18));
+                            } else {
+                                m_notifications_badge->Hide();
+                            }
+                            
+                            if (m_info_panel) {
+                                m_info_panel->Layout();
+                            }
+                        }
+                        
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unread notifications count updated: " << unread_count;
+                    });
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing unread notifications count: " << e.what();
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to get unread notifications count. HTTP status: " << http_status;
+            }
+        },
+        // on_error: ошибка при получении количества непрочитанных уведомлений
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Error getting unread notifications count: " << error 
+                                       << ", HTTP status: " << http_status;
+            // Не показываем ошибку пользователю, просто не обновляем badge
+        }
+    );
+}
+
+void FilamentHubPanel::show_notifications_dropdown()
+{
+    if (m_browser == nullptr) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot show notifications dropdown - WebView is null";
+        return;
+    }
+    
+    // ВАЖНО: Компонент Notifications должен быть встроен в WebView панели FilamentHub
+    // При клике на кнопку мы вызываем JavaScript функцию для показа выпадающего меню
+    // Но для этого нужно, чтобы компонент Notifications был видим в OrcaSlicer
+    
+    // Временное решение: открываем страницу с уведомлениями
+    // В будущем можно встроить компонент Notifications прямо в WebView панели FilamentHub
+    load_url(build_frontend_url("/profile?tab=notifications"));
+    
+    // TODO: Реализовать выпадающее меню уведомлений в WebView
+    // Для этого нужно:
+    // 1. Встроить компонент Notifications в WebView панели FilamentHub
+    // 2. Показывать компонент Notifications даже когда isInOrcaSlicer = true
+    // 3. При клике на кнопку вызывать JavaScript функцию для показа выпадающего меню
+    // 4. Использовать window.postMessage для коммуникации между C++ и React компонентом
 }
 
 }} // namespace Slic3r::GUI

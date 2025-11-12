@@ -171,6 +171,110 @@ public:
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
     ) const;
 
+    /**
+     * \brief Get user's printer profiles for OrcaSlicer synchronisation
+     * 
+     * Retrieves all printer profiles belonging to the authenticated user.
+     * Supports incremental sync via updated_since parameter.
+     * 
+     * \param access_token JWT access token
+     * \param updated_since Optional ISO 8601 timestamp for incremental sync
+     * \param on_complete Called when request succeeds. Parameters: (json_body, http_status)
+     * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)
+     */
+    void get_my_printer_profiles(
+        const std::string& access_token,
+        const std::string& updated_since = "",
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete = nullptr,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
+    ) const;
+
+    /**
+     * \brief Get user's print profiles for OrcaSlicer synchronisation
+     * 
+     * Retrieves all print profiles belonging to the authenticated user.
+     * Supports incremental sync via updated_since parameter.
+     * 
+     * \param access_token JWT access token
+     * \param updated_since Optional ISO 8601 timestamp for incremental sync
+     * \param on_complete Called when request succeeds. Parameters: (json_body, http_status)
+     * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)
+     */
+    void get_my_print_profiles(
+        const std::string& access_token,
+        const std::string& updated_since = "",
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete = nullptr,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
+    ) const;
+
+    /**
+     * \brief Download printer profile in OrcaSlicer JSON format
+     * 
+     * Downloads a printer profile from FilamentHub API in OrcaSlicer-compatible JSON format.
+     * 
+     * \param profile_id Printer profile ID in FilamentHub
+     * \param access_token JWT access token
+     * \param on_complete Called when download succeeds. Parameters: (json_content, http_status)
+     * \param on_error Called when download fails. Parameters: (response_body, error_message, http_status)
+     */
+    void download_printer_profile(
+        int profile_id,
+        const std::string& access_token,
+        std::function<void(std::string /* json_content */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Download print profile in OrcaSlicer JSON format
+     * 
+     * Downloads a print profile from FilamentHub API in OrcaSlicer-compatible JSON format.
+     * 
+     * \param profile_id Print profile ID in FilamentHub
+     * \param access_token JWT access token
+     * \param on_complete Called when download succeeds. Parameters: (json_content, http_status)
+     * \param on_error Called when download fails. Parameters: (response_body, error_message, http_status)
+     */
+    void download_print_profile(
+        int profile_id,
+        const std::string& access_token,
+        std::function<void(std::string /* json_content */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Import printer profiles to FilamentHub
+     * 
+     * Sends printer profiles from OrcaSlicer to FilamentHub for synchronisation.
+     * 
+     * \param access_token JWT access token
+     * \param profiles_json JSON array of printer profiles in OrcaSlicer format
+     * \param on_complete Called when import succeeds. Parameters: (response_body, http_status)
+     * \param on_error Called when import fails. Parameters: (response_body, error_message, http_status)
+     */
+    void import_printer_profiles(
+        const std::string& access_token,
+        const std::string& profiles_json,
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Import print profiles to FilamentHub
+     * 
+     * Sends print profiles from OrcaSlicer to FilamentHub for synchronisation.
+     * 
+     * \param access_token JWT access token
+     * \param profiles_json JSON array of print profiles in OrcaSlicer format
+     * \param on_complete Called when import succeeds. Parameters: (response_body, http_status)
+     * \param on_error Called when import fails. Parameters: (response_body, error_message, http_status)
+     */
+    void import_print_profiles(
+        const std::string& access_token,
+        const std::string& profiles_json,
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
 private:
     std::string m_access_token;
     static std::string s_api_base_url;

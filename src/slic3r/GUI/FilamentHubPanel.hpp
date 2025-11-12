@@ -152,16 +152,50 @@ private:
      * \brief Send response back to frontend via JavaScript
      */
     void send_response(const wxString& command, const wxString& status, const wxString& message = "", const wxString& sequence_id = "");
+    
+    /**
+     * \brief Show notification in WebView (instead of modal dialog)
+     * 
+     * Sends a notification message to the FilamentHub frontend via JavaScript.
+     * The frontend should display this as a non-blocking notification (e.g., toast).
+     * 
+     * \param message Notification message
+     * \param type Notification type: "info", "warning", "error", "success"
+     */
+    void show_notification_in_webview(const wxString& message, const wxString& type = "info");
 
     /**
      * \brief Synchronize user presets from FilamentHub
      * 
      * Downloads all user presets from FilamentHub API and imports them into OrcaSlicer PresetBundle.
      * Supports incremental sync via last_sync_time stored in AppConfig.
+     * Checks user permissions before synchronizing.
      * 
      * \param force_full_sync If true, syncs all presets regardless of last_sync_time
      */
     void synchronize_presets(bool force_full_sync = false);
+
+    /**
+     * \brief Synchronize user printer profiles from FilamentHub
+     * 
+     * Downloads all user printer profiles from FilamentHub API and imports them into OrcaSlicer PresetBundle.
+     * Supports incremental sync via last_sync_time stored in AppConfig.
+     * Checks user permissions before synchronizing.
+     * 
+     * \param force_full_sync If true, syncs all profiles regardless of last_sync_time
+     */
+    void synchronize_printer_profiles(bool force_full_sync = false);
+
+    /**
+     * \brief Synchronize user print profiles from FilamentHub
+     * 
+     * Downloads all user print profiles from FilamentHub API and imports them into OrcaSlicer PresetBundle.
+     * Supports incremental sync via last_sync_time stored in AppConfig.
+     * Checks user permissions before synchronizing.
+     * 
+     * \param force_full_sync If true, syncs all profiles regardless of last_sync_time
+     */
+    void synchronize_print_profiles(bool force_full_sync = false);
 
 private:
     /**
@@ -204,6 +238,32 @@ private:
     std::vector<int> get_all_mapped_preset_ids();
     
     /**
+     * \brief Save printer profile mapping (profile_id → bundle_profile_name) to AppConfig
+     */
+    void save_printer_profile_mapping(int profile_id, const std::string& bundle_profile_name);
+    
+    /**
+     * \brief Load printer profile mapping (profile_id → bundle_profile_name) from AppConfig
+     * 
+     * \param profile_id Printer profile ID in FilamentHub
+     * \return Bundle profile name or empty string if not found
+     */
+    std::string load_printer_profile_mapping(int profile_id);
+    
+    /**
+     * \brief Save print profile mapping (profile_id → bundle_profile_name) to AppConfig
+     */
+    void save_print_profile_mapping(int profile_id, const std::string& bundle_profile_name);
+    
+    /**
+     * \brief Load print profile mapping (profile_id → bundle_profile_name) from AppConfig
+     * 
+     * \param profile_id Print profile ID in FilamentHub
+     * \return Bundle profile name or empty string if not found
+     */
+    std::string load_print_profile_mapping(int profile_id);
+    
+    /**
      * \brief Save last sync time to AppConfig
      */
     void save_last_sync_time(int user_id, const std::string& timestamp);
@@ -244,6 +304,46 @@ private:
      */
     bool import_preset_silent(int preset_id, const std::string& preset_name, const std::string& access_token);
 
+    /**
+     * \brief Import printer profile from FilamentHub without UI dialogs (for sync)
+     * 
+     * Downloads and imports a printer profile silently, adding [FilamentHub] postfix and saving mapping.
+     * 
+     * \param profile_id Printer profile ID in FilamentHub
+     * \param profile_name Printer profile name from FilamentHub
+     * \param access_token Access token for API
+     * \return true if imported successfully, false otherwise
+     */
+    bool import_printer_profile_silent(int profile_id, const std::string& profile_name, const std::string& access_token);
+
+    /**
+     * \brief Import print profile from FilamentHub without UI dialogs (for sync)
+     * 
+     * Downloads and imports a print profile silently, adding [FilamentHub] postfix and saving mapping.
+     * 
+     * \param profile_id Print profile ID in FilamentHub
+     * \param profile_name Print profile name from FilamentHub
+     * \param access_token Access token for API
+     * \return true if imported successfully, false otherwise
+     */
+    bool import_print_profile_silent(int profile_id, const std::string& profile_name, const std::string& access_token);
+
+    /**
+     * \brief Check user permissions before synchronization
+     * 
+     * Retrieves user info from FilamentHub API and checks if user has permissions
+     * to import/export printer and print profiles.
+     * 
+     * \param access_token JWT access token
+     * \param on_complete Called when permissions are checked. Parameters: (allow_printer_import, allow_printer_export, allow_print_import, allow_print_export)
+     * \param on_error Called when check fails. Parameters: (error_message, http_status)
+     */
+    void check_user_permissions(
+        const std::string& access_token,
+        std::function<void(bool, bool, bool, bool)> on_complete,
+        std::function<void(std::string, unsigned)> on_error
+    );
+
 private:
     /**
      * \brief Handle sync button click
@@ -279,6 +379,7 @@ private:
     wxButton* m_logout_button { nullptr }; // Logout button (only if logged in)
     wxButton* m_settings_button { nullptr }; // Settings button for URLs
     bool m_is_syncing { false }; // Is sync in progress
+    int m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     
@@ -288,6 +389,8 @@ private:
     static const std::string CONFIG_KEY_USER_ID;
     static const std::string CONFIG_KEY_LAST_SYNC_TIME;
     static const std::string CONFIG_KEY_PRESET_MAPPING;
+    static const std::string CONFIG_KEY_PRINTER_PROFILE_MAPPING;
+    static const std::string CONFIG_KEY_PRINT_PROFILE_MAPPING;
     static const std::string CONFIG_KEY_FRONTEND_URL;
     static const std::string CONFIG_KEY_API_BASE_URL;
 

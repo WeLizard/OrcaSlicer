@@ -226,6 +226,14 @@ private:
     std::string load_preset_mapping(int preset_id);
     
     /**
+     * \brief Check if preset exists in PresetBundle by name
+     * 
+     * \param preset_name Preset name (bundle preset name)
+     * \return true if preset exists in PresetBundle (user presets), false otherwise
+     */
+    bool preset_exists_in_bundle(const std::string& preset_name);
+    
+    /**
      * \brief Remove preset mapping from AppConfig
      */
     void remove_preset_mapping(int preset_id);

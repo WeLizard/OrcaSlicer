@@ -45,8 +45,12 @@
 #include <wx/panel.h>
 #include <wx/dialog.h>
 #include <wx/textctrl.h>
+#include <wx/menu.h>
 // #include <wx/flexgrid.h> // Removed - wxFlexGridSizer should be available from other includes
 #include <nlohmann/json.hpp>
+#include <boost/beast/core/detail/base64.hpp>
+#include <algorithm>
+#include <ctime>
 #include <chrono>
 #include <set>
 #include <boost/log/trivial.hpp>
@@ -98,6 +102,13 @@ FilamentHubPanel::~FilamentHubPanel()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Start";
     SetEvtHandlerEnabled(false);
+    
+    // Очищаем меню уведомлений
+    if (m_notifications_menu != nullptr) {
+        delete m_notifications_menu;
+        m_notifications_menu = nullptr;
+    }
+    
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " End";
 }
 
@@ -127,22 +138,30 @@ void FilamentHubPanel::init()
     
     info_sizer->AddStretchSpacer(); // Push buttons to the right
     
-    // Right side: Navigation buttons first
+    // Right side: Navigation buttons first (compact style, square corners, no spacing between buttons)
     m_catalog_button = new Button(m_info_panel, _("Catalog"));
-    m_catalog_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
-    m_catalog_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { navigate_to_catalog(); });
-    info_sizer->Add(m_catalog_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    set_button_square_style(m_catalog_button, ButtonStyle::Regular);
+    m_catalog_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
+        m_active_page = "catalog";
+        update_active_button_style();
+        navigate_to_catalog(); 
+    });
+    info_sizer->Add(m_catalog_button, 0, wxALIGN_CENTER_VERTICAL);
     
     m_profile_button = new Button(m_info_panel, _("Profile"));
-    m_profile_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
-    m_profile_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { navigate_to_profile(); });
+    set_button_square_style(m_profile_button, ButtonStyle::Regular);
+    m_profile_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
+        m_active_page = "profile";
+        update_active_button_style();
+        navigate_to_profile(); 
+    });
     m_profile_button->Hide(); // Hidden by default (shown when logged in)
-    info_sizer->Add(m_profile_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_profile_button, 0, wxALIGN_CENTER_VERTICAL);
     
     // Action buttons
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Creating sync button...";
     m_sync_button = new Button(m_info_panel, _("Synchronize"));
-    m_sync_button->SetStyle(ButtonStyle::Confirm, ButtonType::Window);
+    set_button_square_style(m_sync_button, ButtonStyle::Confirm);
     
     // Проверяем, что кнопка создана
     if (m_sync_button == nullptr) {
@@ -158,61 +177,58 @@ void FilamentHubPanel::init()
     
     m_sync_button->Hide(); // Hidden by default (shown when logged in)
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync button hidden by default (will be shown when logged in)";
-    info_sizer->Add(m_sync_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_sync_button, 0, wxALIGN_CENTER_VERTICAL);
 
     m_settings_button = new Button(m_info_panel, _("Settings"));
-    m_settings_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    set_button_square_style(m_settings_button, ButtonStyle::Regular);
     m_settings_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_settings_dialog(); });
-    info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL);
     
     // Refresh button - reloads the current page
     m_refresh_button = new Button(m_info_panel, _("Refresh"));
-    m_refresh_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    set_button_square_style(m_refresh_button, ButtonStyle::Regular);
     m_refresh_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { reload(); });
-    info_sizer->Add(m_refresh_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_refresh_button, 0, wxALIGN_CENTER_VERTICAL);
     
     // Notifications button - shows notifications dropdown (only if logged in)
+    // Text will be updated dynamically: "Notifications" or "Notifications: X"
     m_notifications_button = new Button(m_info_panel, _("Notifications"));
-    m_notifications_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    set_button_square_style(m_notifications_button, ButtonStyle::Regular);
     m_notifications_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
-        // Instead of opening a page, show notifications dropdown in WebView
+        // Show popup menu with notifications
         show_notifications_dropdown();
     });
     m_notifications_button->Hide(); // Hidden by default (shown when logged in)
     
-    // Badge for unread notifications count
+    // Badge is no longer needed - count is shown directly on button
+    // Keep m_notifications_badge for backward compatibility but hide it
     m_notifications_badge = new wxStaticText(m_info_panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
-    m_notifications_badge->SetBackgroundColour(wxColour(255, 0, 0)); // Red background
-    m_notifications_badge->SetForegroundColour(wxColour(255, 255, 255)); // White text
-    m_notifications_badge->SetFont(wxFont(8, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD));
-    m_notifications_badge->Hide(); // Hidden by default
+    m_notifications_badge->Hide(); // Always hidden - count shown on button instead
     
-    // Create a sizer for the notifications button and badge
-    wxBoxSizer* notifications_sizer = new wxBoxSizer(wxHORIZONTAL);
-    notifications_sizer->Add(m_notifications_button, 0, wxALIGN_CENTER_VERTICAL);
-    notifications_sizer->Add(m_notifications_badge, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 3);
-    info_sizer->Add(notifications_sizer, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_notifications_button, 0, wxALIGN_CENTER_VERTICAL);
     
     // Admin button - opens admin panel (only if admin)
     m_admin_button = new Button(m_info_panel, _("Admin"));
-    m_admin_button->SetStyle(ButtonStyle::Alert, ButtonType::Window); // Alert style for admin (yellow/red)
+    set_button_square_style(m_admin_button, ButtonStyle::Alert);
     m_admin_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
-        load_url(build_frontend_url("/admin")); 
+        m_active_page = "admin";
+        update_active_button_style();
+        navigate_without_reload("/admin");
     });
     m_admin_button->Hide(); // Hidden by default (shown when admin)
-    info_sizer->Add(m_admin_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_admin_button, 0, wxALIGN_CENTER_VERTICAL);
     
     // Login button - redirects to login page in WebView (user logs in there)
     m_login_button = new Button(m_info_panel, _("Login"));
-    m_login_button->SetStyle(ButtonStyle::Confirm, ButtonType::Window); // Confirm style for login (green)
+    set_button_square_style(m_login_button, ButtonStyle::Confirm);
     m_login_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_login(); });
-    info_sizer->Add(m_login_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_login_button, 0, wxALIGN_CENTER_VERTICAL);
     
     m_logout_button = new Button(m_info_panel, _("Logout"));
-    m_logout_button->SetStyle(ButtonStyle::Regular, ButtonType::Window);
+    set_button_square_style(m_logout_button, ButtonStyle::Regular);
     m_logout_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { logout(); });
     m_logout_button->Hide(); // Hidden by default (shown when logged in)
-    info_sizer->Add(m_logout_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
+    info_sizer->Add(m_logout_button, 0, wxALIGN_CENTER_VERTICAL);
 
     m_sync_status_label = new wxStaticText(m_info_panel, wxID_ANY, _("Ready"));
     m_sync_status_label->Hide();
@@ -371,6 +387,126 @@ void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
                 if (window.postMessage) {
                     window.postMessage(notification, '*');
                 }
+            },
+            // Экспорт filament presets из OrcaSlicer в FilamentHub
+            exportFilamentPresets: function() {
+                return new Promise(function(resolve, reject) {
+                    const sequenceId = 'export_filament_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    
+                    // Отправляем команду в C++
+                    const message = JSON.stringify({
+                        command: 'export_filament_presets',
+                        sequence_id: sequenceId,
+                        data: {}
+                    });
+                    
+                    // Регистрируем обработчик ответа
+                    const handleResponse = function(event) {
+                        try {
+                            const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                            if (data.command === 'export_filament_presets' && data.sequence_id === sequenceId) {
+                                window.removeEventListener('message', handleResponse);
+                                if (data.status === 'success') {
+                                    resolve({ message: data.message || 'Export started' });
+                                } else {
+                                    reject(new Error(data.message || 'Export failed'));
+                                }
+                            }
+                        } catch (e) {
+                            // Игнорируем сообщения, которые не являются ответами
+                        }
+                    };
+                    
+                    window.addEventListener('message', handleResponse);
+                    
+                    // Отправляем сообщение через postMessage
+                    if (window.wx && window.wx.postMessage) {
+                        window.wx.postMessage(message);
+                    } else {
+                        window.removeEventListener('message', handleResponse);
+                        reject(new Error('OrcaSlicer API not available'));
+                    }
+                });
+            },
+            // Экспорт printer profiles из OrcaSlicer в FilamentHub
+            exportPrinterProfiles: function() {
+                return new Promise(function(resolve, reject) {
+                    const sequenceId = 'export_printer_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    
+                    // Отправляем команду в C++
+                    const message = JSON.stringify({
+                        command: 'export_printer_profiles',
+                        sequence_id: sequenceId,
+                        data: {}
+                    });
+                    
+                    // Регистрируем обработчик ответа
+                    const handleResponse = function(event) {
+                        try {
+                            const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                            if (data.command === 'export_printer_profiles' && data.sequence_id === sequenceId) {
+                                window.removeEventListener('message', handleResponse);
+                                if (data.status === 'success') {
+                                    resolve({ message: data.message || 'Export started' });
+                                } else {
+                                    reject(new Error(data.message || 'Export failed'));
+                                }
+                            }
+                        } catch (e) {
+                            // Игнорируем сообщения, которые не являются ответами
+                        }
+                    };
+                    
+                    window.addEventListener('message', handleResponse);
+                    
+                    // Отправляем сообщение через postMessage
+                    if (window.wx && window.wx.postMessage) {
+                        window.wx.postMessage(message);
+                    } else {
+                        window.removeEventListener('message', handleResponse);
+                        reject(new Error('OrcaSlicer API not available'));
+                    }
+                });
+            },
+            // Экспорт print profiles из OrcaSlicer в FilamentHub
+            exportPrintProfiles: function() {
+                return new Promise(function(resolve, reject) {
+                    const sequenceId = 'export_print_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    
+                    // Отправляем команду в C++
+                    const message = JSON.stringify({
+                        command: 'export_print_profiles',
+                        sequence_id: sequenceId,
+                        data: {}
+                    });
+                    
+                    // Регистрируем обработчик ответа
+                    const handleResponse = function(event) {
+                        try {
+                            const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                            if (data.command === 'export_print_profiles' && data.sequence_id === sequenceId) {
+                                window.removeEventListener('message', handleResponse);
+                                if (data.status === 'success') {
+                                    resolve({ message: data.message || 'Export started' });
+                                } else {
+                                    reject(new Error(data.message || 'Export failed'));
+                                }
+                            }
+                        } catch (e) {
+                            // Игнорируем сообщения, которые не являются ответами
+                        }
+                    };
+                    
+                    window.addEventListener('message', handleResponse);
+                    
+                    // Отправляем сообщение через postMessage
+                    if (window.wx && window.wx.postMessage) {
+                        window.wx.postMessage(message);
+                    } else {
+                        window.removeEventListener('message', handleResponse);
+                        reject(new Error('OrcaSlicer API not available'));
+                    }
+                });
             }
         };
         
@@ -495,6 +631,42 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-syncing presets after login...";
                 synchronize_presets(true); // force_full_sync = true для первого раза
             });
+        } else if (command == "export_filament_presets") {
+            // User wants to export filament presets from OrcaSlicer to FilamentHub
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Export filament presets command received from Frontend";
+            
+            // Вызываем export_filament_presets_to_filamenthub асинхронно
+            // Результат будет отправлен через show_notification_in_webview
+            CallAfter([this]() {
+                export_filament_presets_to_filamenthub();
+            });
+            
+            // Отправляем немедленный ответ, что команда получена
+            send_response("export_filament_presets", "success", "Export started", sequence_id);
+        } else if (command == "export_printer_profiles") {
+            // User wants to export printer profiles from OrcaSlicer to FilamentHub
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Export printer profiles command received from Frontend";
+            
+            // Вызываем export_printer_profiles_to_filamenthub асинхронно
+            // Результат будет отправлен через show_notification_in_webview
+            CallAfter([this]() {
+                export_printer_profiles_to_filamenthub();
+            });
+            
+            // Отправляем немедленный ответ, что команда получена
+            send_response("export_printer_profiles", "success", "Export started", sequence_id);
+        } else if (command == "export_print_profiles") {
+            // User wants to export print profiles from OrcaSlicer to FilamentHub
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Export print profiles command received from Frontend";
+            
+            // Вызываем export_print_profiles_to_filamenthub асинхронно
+            // Результат будет отправлен через show_notification_in_webview
+            CallAfter([this]() {
+                export_print_profiles_to_filamenthub();
+            });
+            
+            // Отправляем немедленный ответ, что команда получена
+            send_response("export_print_profiles", "success", "Export started", sequence_id);
         } else {
             BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Unknown command: " << command.ToUTF8();
             send_response(command, "error", "Unknown command", sequence_id);
@@ -718,6 +890,113 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 4] Loaded auth token for user_id=" << user_id 
                             << ", token_length=" << access_token.length();
     
+    // ДИАГНОСТИКА: Проверяем exp токена перед отправкой запроса
+    long long token_exp = extract_jwt_exp_for_diagnostics(access_token);
+    if (token_exp > 0) {
+        time_t current_time = time(nullptr);
+        long long time_until_expiry = token_exp - current_time;
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 4.1] Token diagnostics: exp=" << token_exp 
+                                << " (UTC timestamp), current=" << current_time 
+                                << " (UTC timestamp), time_until_expiry=" << time_until_expiry 
+                                << " seconds (" << (time_until_expiry / 60) << " minutes, " 
+                                << (time_until_expiry / 3600) << " hours, " 
+                                << (time_until_expiry / 86400) << " days)";
+        if (time_until_expiry <= 0) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 4.1] Token is expired! " 
+                                        << "Expired " << (-time_until_expiry) << " seconds ago";
+        }
+    } else {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 4.1] Could not extract exp from token for diagnostics";
+    }
+    
+    // ВАЖНО: Проверяем, что токен не пустой (защита от поврежденного сохранения)
+    if (access_token.empty()) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Access token is empty after loading from config!";
+        m_is_syncing = false;
+        CallAfter([this]() {
+            update_sync_button_state(false);
+            wxMessageBox(
+                _L("Invalid token found. Please login again."),
+                _L("FilamentHub Sync Error"),
+                wxOK | wxICON_WARNING
+            );
+        });
+        return;
+    }
+    
+    // ВАЖНО: Проверяем валидность токена перед синхронизацией (как в BambuLab)
+    // Делаем легкий запрос get_current_user, чтобы убедиться, что токен валидный
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 4.5] Validating token before sync...";
+    FilamentHubClient validation_client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    validation_client.set_api_base_url(api_base_url);
+    
+    validation_client.get_current_user(
+        access_token,
+        // on_complete: токен валидный, можно синхронизировать
+        [this, user_id, force_full_sync, api_base_url, access_token](std::string json_body, unsigned http_status) {
+            if (http_status == 200) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 4.6] Token is valid, proceeding with sync";
+                // Токен валидный - продолжаем синхронизацию
+                continue_sync_after_token_validation(user_id, force_full_sync, api_base_url, access_token);
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token validation failed. Status: " << http_status;
+                // Токен невалидный - показываем ошибку, но НЕ очищаем токен (как в BambuLab)
+                CallAfter([this, http_status]() {
+                    m_is_syncing = false;
+                    update_sync_button_state(false);
+                    if (m_sync_progress) {
+                        m_sync_progress->Hide();
+                    }
+                    if (m_sync_status_label) {
+                        m_sync_status_label->Hide();
+                    }
+                    m_info_panel->Layout();
+                    if (http_status == 401) {
+                        show_notification_in_webview(
+                            _L("Your session has expired. Please login again and try synchronizing again."),
+                            "warning"
+                        );
+                    } else {
+                        show_notification_in_webview(
+                            _L("Failed to validate authentication. Please try again."),
+                            "error"
+                        );
+                    }
+                });
+            }
+        },
+        // on_error: ошибка при проверке токена
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token validation error: " << error << ", Status: " << http_status;
+            CallAfter([this, http_status, error]() {
+                m_is_syncing = false;
+                update_sync_button_state(false);
+                if (m_sync_progress) {
+                    m_sync_progress->Hide();
+                }
+                if (m_sync_status_label) {
+                    m_sync_status_label->Hide();
+                }
+                m_info_panel->Layout();
+                if (http_status == 401) {
+                    show_notification_in_webview(
+                        _L("Your session has expired. Please login again and try synchronizing again."),
+                        "warning"
+                    );
+                } else {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to validate authentication: %s"), wxString::FromUTF8(error.c_str())),
+                        "error"
+                    );
+                }
+            });
+        }
+    );
+}
+
+void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool force_full_sync, const std::string& api_base_url, const std::string& access_token)
+{
     // 2. Получаем last_sync_time для инкрементальной синхронизации
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 5] Loading last_sync_time from AppConfig...";
     std::string updated_since;
@@ -732,11 +1011,12 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     // 3. Получаем список пресетов пользователя через API
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 7] Creating FilamentHubClient...";
     FilamentHubClient client;
-    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
     client.set_api_base_url(api_base_url);
     
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 8] Calling get_my_presets API: " << api_base_url 
-                            << ", updated_since='" << updated_since << "'";
+                            << ", updated_since='" << updated_since << "'"
+                            << ", token_length=" << access_token.length()
+                            << ", token_preview=" << access_token.substr(0, 20) << "...";
     
     client.get_my_presets(
             access_token,
@@ -750,8 +1030,9 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
             
             // Проверяем статус ответа
             if (http_status == 401) {
-                // Токен истек или невалидный - очищаем авторизацию
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired or invalid (401) during presets sync, clearing auth";
+                // Токен истек или невалидный - НЕ вызываем logout() автоматически, НЕ перезагружаем страницу
+                // Как в BambuLab: показываем ошибку и оставляем токен сохраненным, позволяя пользователю повторить попытку
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired or invalid (401) during presets sync";
                 // ВАЖНО: m_active_syncs не увеличивался до этого момента (увеличивается только после 200 OK)
                 // Поэтому НЕ уменьшаем счетчик здесь
                 CallAfter([this]() {
@@ -763,18 +1044,21 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
                     if (m_sync_status_label) {
                         m_sync_status_label->Hide();
                     }
-                    logout(); // Очищает токен и обновляет UI
+                    // НЕ вызываем logout() - оставляем пользователя залогиненным (как в BambuLab)
+                    // НЕ перезагружаем страницу - оставляем текущую страницу (как в BambuLab)
+                    // Токен остается сохраненным, пользователь может повторить попытку синхронизации после повторной авторизации
                     update_sync_button_state(false);
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
                     if (m_active_syncs < 0) {
                         m_active_syncs = 0;
                     }
                     m_info_panel->Layout();
-                    // Показываем уведомление в WebView вместо модального окна
+                    // Показываем уведомление в WebView (как в BambuLab - просто показываем ошибку)
                     show_notification_in_webview(
-                        _L("Your session has expired. Please login again."),
+                        _L("Your session has expired. Please login again and try synchronizing again."),
                         "warning"
                     );
+                    // НЕ перезагружаем страницу - пусть пользователь сам решает, хочет ли он войти заново
                 });
                 return;
             }
@@ -1016,16 +1300,17 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
                     }
                 }
                 
-                // Показываем прогресс-бар
+                // Прогресс-бар не показываем - синхронизация быстрая
+                // Оставляем только логи с названиями и количеством пресетов
                 CallAfter([this, total_presets = presets.size()]() {
-                    if (m_sync_progress && m_sync_status_label) {
-                        m_sync_progress->SetRange(total_presets);
-                        m_sync_progress->SetValue(0);
-                        m_sync_progress->Show();
-                        m_sync_status_label->SetLabel(wxString::Format(_("Syncing %d presets..."), total_presets));
-                        m_sync_status_label->Show();
-                        m_info_panel->Layout();
+                    // Скрываем прогресс-бар и строку состояния - синхронизация быстрая
+                    if (m_sync_progress) {
+                        m_sync_progress->Hide();
                     }
+                    if (m_sync_status_label) {
+                        m_sync_status_label->Hide();
+                    }
+                    m_info_panel->Layout();
                     
                     // Начинаем обработку очереди пресетов в UI потоке
                     // Это предотвратит deadlock, так как мы не вызываем perform_sync() из callback HTTP клиента
@@ -1242,7 +1527,25 @@ void FilamentHubPanel::send_response(const wxString& command, const wxString& st
         response["sequence_id"] = sequence_id.ToUTF8().data();
     }
     
-    wxString js_response = wxString::Format("window.postMessage(%s)", response.dump());
+    // Отправляем ответ через window.postMessage (аналогично show_notification_in_webview)
+    // Используем тот же подход, что и для уведомлений - напрямую вставляем JSON в JavaScript код
+    std::string response_json = response.dump();
+    
+    // Отправляем через window.postMessage (JSON объект напрямую)
+    // nlohmann::json::dump() возвращает валидный JSON, который можно использовать в JavaScript
+    wxString js_response = wxString::Format(
+        R"(
+            (function() {
+                try {
+                    var response = %s;
+                    window.postMessage(response, '*');
+                } catch (e) {
+                    console.error('FilamentHub: Error sending response:', e);
+                }
+            })();
+        )",
+        response_json
+    );
     WebView::RunScript(m_browser, js_response);
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sent response: " << response.dump();
 }
@@ -1378,6 +1681,93 @@ bool FilamentHubPanel::load_auth_token(std::string& access_token, int& user_id)
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user_id: " << e.what();
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: load_auth_token: About to return false (exception)";
         return false;
+    }
+}
+
+long long FilamentHubPanel::extract_jwt_exp_for_diagnostics(const std::string& token)
+{
+    // JWT токен состоит из трех частей, разделенных точками: header.payload.signature
+    // Нам нужна только payload (вторая часть) для извлечения exp
+    
+    if (token.empty()) {
+        return 0;
+    }
+    
+    // Находим первую точку (разделитель между header и payload)
+    size_t first_dot = token.find('.');
+    if (first_dot == std::string::npos) {
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: JWT token has no first dot (invalid format)";
+        return 0;
+    }
+    
+    // Находим вторую точку (разделитель между payload и signature)
+    size_t second_dot = token.find('.', first_dot + 1);
+    if (second_dot == std::string::npos) {
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: JWT token has no second dot (invalid format)";
+        return 0;
+    }
+    
+    // Извлекаем payload (часть между первой и второй точкой)
+    std::string payload_b64 = token.substr(first_dot + 1, second_dot - first_dot - 1);
+    
+    if (payload_b64.empty()) {
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: JWT payload is empty";
+        return 0;
+    }
+    
+    try {
+        // Base64 декодирование (JWT использует URL-safe base64, но стандартный base64 тоже может работать)
+        // Заменяем URL-safe символы на стандартные base64
+        std::string payload_b64_std = payload_b64;
+        std::replace(payload_b64_std.begin(), payload_b64_std.end(), '-', '+');
+        std::replace(payload_b64_std.begin(), payload_b64_std.end(), '_', '/');
+        
+        // Добавляем padding если нужно (base64 требует длину, кратную 4)
+        int padding = 4 - (payload_b64_std.length() % 4);
+        if (padding != 4) {
+            payload_b64_std.append(padding, '=');
+        }
+        
+        // Декодируем base64 используя boost::beast::detail::base64
+        std::vector<unsigned char> decoded;
+        decoded.resize(boost::beast::detail::base64::decoded_size(payload_b64_std.length()));
+        auto result = boost::beast::detail::base64::decode(
+            decoded.data(),
+            payload_b64_std.data(),
+            payload_b64_std.length()
+        );
+        
+        // boost::beast::detail::base64::decode возвращает pair<size_t, size_t>
+        // Первое значение - количество декодированных байт, второе - код результата
+        if (!result.second) {  // result.second == 0 означает ошибку декодирования
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Failed to decode JWT payload base64";
+            return 0;
+        }
+        
+        decoded.resize(result.first);  // Используем result.first как количество декодированных байт
+        
+        // Преобразуем в строку и парсим JSON
+        std::string payload_json(decoded.begin(), decoded.end());
+        
+        try {
+            nlohmann::json payload = nlohmann::json::parse(payload_json);
+            
+            // Извлекаем exp из JSON
+            if (payload.contains("exp") && payload["exp"].is_number()) {
+                long long exp_value = payload["exp"].get<long long>();
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted exp from JWT token: " << exp_value;
+                return exp_value;
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: JWT payload has no 'exp' claim";
+                return 0;
+            }
+        } catch (const nlohmann::json::exception& e) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Failed to parse JWT payload JSON: " << e.what();
+            return 0;
+        }
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Error extracting exp from JWT token: " << e.what();
+        return 0;
     }
 }
 
@@ -2585,12 +2975,80 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
 
 void FilamentHubPanel::navigate_to_catalog()
 {
-    load_url(build_frontend_url("/")); // Navigate to catalog page
+    m_active_page = "catalog";
+    update_active_button_style();
+    // Используем JavaScript навигацию через React Router без перезагрузки страницы
+    navigate_without_reload("/");
 }
 
 void FilamentHubPanel::navigate_to_profile()
 {
-    load_url(build_frontend_url("/profile")); // Navigate to profile page
+    m_active_page = "profile";
+    update_active_button_style();
+    // Используем JavaScript навигацию через React Router без перезагрузки страницы
+    navigate_without_reload("/profile");
+}
+
+void FilamentHubPanel::update_active_button_style()
+{
+    // Reset all navigation buttons to Regular style (keep square corners)
+    if (m_catalog_button) {
+        set_button_square_style(m_catalog_button, ButtonStyle::Regular);
+    }
+    if (m_profile_button) {
+        set_button_square_style(m_profile_button, ButtonStyle::Regular);
+    }
+    if (m_admin_button) {
+        // Admin button uses Alert style when inactive
+        set_button_square_style(m_admin_button, ButtonStyle::Alert);
+    }
+    
+    // Set active button to Confirm style (green) - keep square corners
+    if (m_active_page == "catalog" && m_catalog_button) {
+        set_button_square_style(m_catalog_button, ButtonStyle::Confirm);
+    } else if (m_active_page == "profile" && m_profile_button) {
+        set_button_square_style(m_profile_button, ButtonStyle::Confirm);
+    } else if (m_active_page == "admin" && m_admin_button) {
+        set_button_square_style(m_admin_button, ButtonStyle::Confirm);
+    }
+    
+    if (m_info_panel) {
+        m_info_panel->Layout();
+    }
+}
+
+void FilamentHubPanel::navigate_without_reload(const wxString& path)
+{
+    // Используем JavaScript для навигации через React Router без перезагрузки страницы
+    // Это быстрее и сохраняет состояние React приложения
+    
+    if (m_browser == nullptr) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot navigate - WebView is null";
+        return;
+    }
+    
+    wxString js_code = wxString::Format(R"(
+        (function() {
+            // Используем глобальную функцию navigate из window.filamenthub
+            if (window.filamenthub && typeof window.filamenthub.navigate === 'function') {
+                window.filamenthub.navigate('%s');
+                return true;
+            }
+            
+            // Fallback: используем window.history.pushState (может не работать с React Router)
+            // Но лучше использовать navigate из React Router
+            console.warn('FilamentHub: window.filamenthub.navigate not found, using history.pushState');
+            window.history.pushState({}, '', '%s');
+            
+            // Создаём событие popstate для обновления React Router
+            window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+            
+            return false;
+        })();
+    )", path.c_str(), path.c_str());
+    
+    WebView::RunScript(m_browser, js_code);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Navigating to " << path.ToUTF8() << " without page reload";
 }
 
 void FilamentHubPanel::show_login()
@@ -2693,6 +3151,13 @@ void FilamentHubPanel::update_api_base_url(const std::string& url, bool persist)
             config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_API_BASE_URL, m_api_base_url);
         }
     }
+}
+
+void FilamentHubPanel::set_button_square_style(Button* button, ButtonStyle style)
+{
+    if (button == nullptr) return;
+    button->SetStyle(style, ButtonType::Compact);
+    button->SetCornerRadius(0); // Square corners - same as in SpinInput, TabCtrl, etc.
 }
 
 wxString FilamentHubPanel::build_frontend_url(const wxString& path_suffix) const
@@ -2888,40 +3353,29 @@ void FilamentHubPanel::run_async(const std::string& job_name, std::function<void
 
 void FilamentHubPanel::show_sync_progress(int total_steps)
 {
-    if (m_sync_progress == nullptr || m_sync_status_label == nullptr) {
-        return;
+    // Прогресс-бар не показываем - синхронизация быстрая
+    // Оставляем только логи с названиями и количеством пресетов
+    if (m_sync_progress) {
+        m_sync_progress->Hide();
     }
-
-    if (total_steps <= 0) {
-        total_steps = 100;
+    if (m_sync_status_label) {
+        m_sync_status_label->Hide();
     }
-
-    m_sync_progress->SetRange(total_steps);
-    m_sync_progress->SetValue(0);
-    m_sync_progress->Show(true);
-    m_sync_status_label->SetLabel(_L("Synchronizing presets..."));
-    m_sync_status_label->Show(true);
     m_info_panel->Layout();
 }
 
 void FilamentHubPanel::update_sync_progress_ui(int completed, int total, const wxString& status_text)
 {
-    if (m_sync_progress == nullptr || m_sync_status_label == nullptr) {
-        return;
+    // Прогресс-бар не обновляем - синхронизация быстрая
+    // Оставляем только логи с названиями и количеством пресетов (BOOST_LOG_TRIVIAL)
+    // Функция оставлена для совместимости, но прогресс-бар скрыт
+    if (m_sync_progress) {
+        m_sync_progress->Hide();
     }
-
-    if (total > 0) {
-        m_sync_progress->SetRange(total);
+    if (m_sync_status_label) {
+        m_sync_status_label->Hide();
     }
-
-    if (completed >= 0) {
-        m_sync_progress->SetValue(std::min(completed, m_sync_progress->GetRange()));
-    }
-
-    if (!status_text.IsEmpty()) {
-        m_sync_status_label->SetLabel(status_text);
-    }
-
+    
     m_info_panel->Layout();
 }
 
@@ -3764,12 +4218,31 @@ void FilamentHubPanel::update_unread_notifications_count()
     int user_id;
     
     if (!load_auth_token(access_token, user_id)) {
+        // User not logged in - hide badge
         BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Cannot update notifications count - user not logged in";
+        CallAfter([this]() {
+            m_unread_notifications_count = 0;
+            if (m_notifications_button != nullptr) {
+                m_notifications_button->SetLabel(_("Notifications"));
+                if (m_info_panel) {
+                    m_info_panel->Layout();
+                }
+            }
+        });
         return;
     }
     
     if (access_token.empty()) {
-        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Cannot update notifications count - access token is empty";
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot update notifications count - access token is empty";
+        CallAfter([this]() {
+            m_unread_notifications_count = 0;
+            if (m_notifications_button != nullptr) {
+                m_notifications_button->SetLabel(_("Notifications"));
+                if (m_info_panel) {
+                    m_info_panel->Layout();
+                }
+            }
+        });
         return;
     }
     
@@ -3789,20 +4262,15 @@ void FilamentHubPanel::update_unread_notifications_count()
                     CallAfter([this, unread_count]() {
                         m_unread_notifications_count = unread_count;
                         
-                        // Обновляем badge
-                        if (m_notifications_badge != nullptr) {
+                        // Обновляем текст кнопки: "Notifications" или "Notifications: X"
+                        if (m_notifications_button != nullptr) {
+                            wxString button_text;
                             if (unread_count > 0) {
-                                std::string badge_text = unread_count > 99 ? "99+" : std::to_string(unread_count);
-                                m_notifications_badge->SetLabel(wxString::FromUTF8(badge_text));
-                                m_notifications_badge->Show();
-                                
-                                // Обновляем размер badge для правильного отображения
-                                wxSize text_size = m_notifications_badge->GetTextExtent(badge_text);
-                                int badge_size = std::max(text_size.GetWidth() + 6, 18); // Минимальный размер 18px
-                                m_notifications_badge->SetMinSize(wxSize(badge_size, 18));
+                                button_text = wxString::Format(_("Notifications: %d"), unread_count);
                             } else {
-                                m_notifications_badge->Hide();
+                                button_text = _("Notifications");
                             }
+                            m_notifications_button->SetLabel(button_text);
                             
                             if (m_info_panel) {
                                 m_info_panel->Layout();
@@ -3829,25 +4297,1583 @@ void FilamentHubPanel::update_unread_notifications_count()
 
 void FilamentHubPanel::show_notifications_dropdown()
 {
+    // Вместо создания wxMenu, вызываем JavaScript функцию в WebView,
+    // которая кликнет на кнопку уведомлений на фронтенде и откроет красивое выпадающее меню
+    // Это соответствует тому, как работает на сайте
+    
     if (m_browser == nullptr) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot show notifications dropdown - WebView is null";
         return;
     }
     
-    // ВАЖНО: Компонент Notifications должен быть встроен в WebView панели FilamentHub
-    // При клике на кнопку мы вызываем JavaScript функцию для показа выпадающего меню
-    // Но для этого нужно, чтобы компонент Notifications был видим в OrcaSlicer
+    // JavaScript код для клика по кнопке уведомлений на фронтенде
+    // Ищем кнопку по aria-label или по роли button с текстом "Уведомления"
+    wxString js_code = R"(
+        (function() {
+            // Пробуем найти кнопку уведомлений разными способами
+            let button = null;
+            
+            // Способ 1: По aria-label
+            button = document.querySelector('button[aria-label="Уведомления"]');
+            
+            // Способ 2: По роли button внутри навигации
+            if (!button) {
+                const nav = document.querySelector('nav');
+                if (nav) {
+                    const buttons = nav.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        const label = btn.getAttribute('aria-label');
+                        if (label && label.includes('Уведомления')) {
+                            button = btn;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Способ 3: По тексту "Уведомления" в кнопке
+            if (!button) {
+                const buttons = document.querySelectorAll('button');
+                for (let btn of buttons) {
+                    const text = btn.textContent || btn.innerText;
+                    if (text && text.trim() === 'Уведомления') {
+                        button = btn;
+                        break;
+                    }
+                }
+            }
+            
+            // Если кнопка найдена - кликаем по ней
+            if (button) {
+                button.click();
+                return true;
+            }
+            
+            return false;
+        })();
+    )";
     
-    // Временное решение: открываем страницу с уведомлениями
-    // В будущем можно встроить компонент Notifications прямо в WebView панели FilamentHub
-    load_url(build_frontend_url("/profile?tab=notifications"));
+    WebView::RunScript(m_browser, js_code);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Triggered notifications dropdown via JavaScript";
+}
+
+// ============================================================================
+// Methods for exporting filament presets to FilamentHub
+// ============================================================================
+
+void FilamentHubPanel::export_filament_presets_to_filamenthub()
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub() CALLED ==========";
     
-    // TODO: Реализовать выпадающее меню уведомлений в WebView
-    // Для этого нужно:
-    // 1. Встроить компонент Notifications в WebView панели FilamentHub
-    // 2. Показывать компонент Notifications даже когда isInOrcaSlicer = true
-    // 3. При клике на кнопку вызывать JavaScript функцию для показа выпадающего меню
-    // 4. Использовать window.postMessage для коммуникации между C++ и React компонентом
+    // Проверяем авторизацию
+    std::string access_token;
+    int user_id;
+    if (!load_auth_token(access_token, user_id)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export filament presets";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Please login to export filament presets to FilamentHub."),
+                "warning"
+            );
+        });
+        return;
+    }
+    
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export filament presets";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+    
+    // Проверяем разрешение на импорт filament presets
+    // ВАЖНО: Используем асинхронную проверку разрешений
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+    
+    client.get_current_user(
+        access_token,
+        // on_complete: проверяем разрешение allow_filament_presets_import
+        [this, access_token, api_base_url](std::string json_body, unsigned http_status) {
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get user info for permission check. HTTP status: " << http_status;
+                CallAfter([this, http_status]() {
+                    if (http_status == 401) {
+                        show_notification_in_webview(
+                            _L("Your session has expired. Please login again."),
+                            "warning"
+                        );
+                    } else if (http_status == 403) {
+                        show_notification_in_webview(
+                            _L("Access denied. Please check your permissions."),
+                            "error"
+                        );
+                    } else {
+                        show_notification_in_webview(
+                            wxString::Format(_L("Failed to check permissions. HTTP status: %d"), http_status),
+                            "error"
+                        );
+                    }
+                });
+                return;
+            }
+            
+            try {
+                nlohmann::json user_json = nlohmann::json::parse(json_body);
+                bool allow_filament_import = user_json.value("allow_filament_presets_import", true);
+                
+                if (!allow_filament_import) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Filament presets import is disabled in user settings";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Filament presets export is disabled in your FilamentHub settings. Please enable it in your profile settings."),
+                            "warning"
+                        );
+                    });
+                    return;
+                }
+                
+                // Разрешение получено - продолжаем экспорт
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Permission check passed, proceeding with export";
+                export_filament_presets_to_filamenthub_internal(access_token, api_base_url);
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                CallAfter([this, e]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            }
+        },
+        // on_error: ошибка при проверке разрешений
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions. Error: " << error 
+                                    << ", Status: " << http_status;
+            CallAfter([this, http_status]() {
+                if (http_status == 401) {
+                    show_notification_in_webview(
+                        _L("Your session has expired. Please login again."),
+                        "warning"
+                    );
+                } else {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to check permissions: %s"), wxString::FromUTF8(error.c_str())),
+                        "error"
+                    );
+                }
+            });
+        }
+    );
+}
+
+void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub_internal() CALLED ==========";
+    
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export filament presets";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+    
+    // Получаем все пользовательские filament presets (не системные)
+    PresetCollection& filaments = bundle->filaments;
+    std::vector<nlohmann::json> presets_json;
+    
+    int preset_count = 0;
+    for (auto it = filaments.begin(); it != filaments.end(); ++it) {
+        const Preset& preset = *it;
+        
+        // Пропускаем системные пресеты
+        if (preset.is_system) {
+            continue;
+        }
+        
+        // Пропускаем пресеты с постфиксом [FilamentHub] (они уже синхронизированы)
+        // Но можно экспортировать их тоже, если пользователь хочет обновить
+        // Для MVP экспортируем все пользовательские пресеты
+        
+        try {
+            // Получаем JSON конфигурацию пресета
+            nlohmann::json orcaslicer_json = preset.config.to_json();
+            
+            // Создаем JSON для Backend
+            nlohmann::json preset_data;
+            
+            // Базовые поля
+            preset_data["external_id"] = preset.setting_id; // Уникальный ID в OrcaSlicer
+            preset_data["name"] = preset.name;
+            
+            // Проверяем маппинг (если пресет уже синхронизирован, добавляем fhub_id)
+            // Маппинг хранится как external_id → fhub_id (для экспорта)
+            // Для импорта используется preset_id → bundle_preset_name
+            std::string mapping_key = CONFIG_KEY_PRESET_MAPPING + "_" + preset.setting_id;
+            std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
+            if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+                try {
+                    int fhub_id = std::stoi(fhub_id_str);
+                    preset_data["fhub_id"] = fhub_id;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for preset external_id=" << preset.setting_id 
+                                           << " -> fhub_id=" << fhub_id;
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                }
+            } else {
+                // Пробуем найти маппинг по bundle_preset_name (для импортированных пресетов)
+                // Ищем все маппинги preset_id → bundle_preset_name и проверяем, совпадает ли bundle_preset_name
+                // Это более сложная логика, но нужна для обратной синхронизации
+                // Для MVP можно пропустить эту проверку и всегда отправлять без fhub_id
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for preset external_id=" << preset.setting_id 
+                                        << ", will be created as new draft";
+            }
+            
+            // OrcaSlicer JSON формат (полный JSON профиль)
+            preset_data["orcaslicer_settings"] = orcaslicer_json;
+            
+            // Извлекаем базовые параметры для Filament
+            // nozzle_temperature - это массив строк, берем первое значение
+            if (orcaslicer_json.contains("nozzle_temperature")) {
+                try {
+                    if (orcaslicer_json["nozzle_temperature"].is_array()) {
+                        auto temps = orcaslicer_json["nozzle_temperature"].get<std::vector<std::string>>();
+                        if (!temps.empty()) {
+                            preset_data["extruder_temp"] = std::stoi(temps[0]);
+                        }
+                    } else if (orcaslicer_json["nozzle_temperature"].is_string()) {
+                        std::string temp_str = orcaslicer_json["nozzle_temperature"].get<std::string>();
+                        preset_data["extruder_temp"] = std::stoi(temp_str);
+                    } else if (orcaslicer_json["nozzle_temperature"].is_number()) {
+                        preset_data["extruder_temp"] = orcaslicer_json["nozzle_temperature"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse nozzle_temperature: " << e.what();
+                }
+            }
+            
+            // bed_temperature - это массив строк, берем первое значение
+            if (orcaslicer_json.contains("bed_temperature")) {
+                try {
+                    if (orcaslicer_json["bed_temperature"].is_array()) {
+                        auto temps = orcaslicer_json["bed_temperature"].get<std::vector<std::string>>();
+                        if (!temps.empty()) {
+                            preset_data["bed_temp"] = std::stoi(temps[0]);
+                        }
+                    } else if (orcaslicer_json["bed_temperature"].is_string()) {
+                        std::string temp_str = orcaslicer_json["bed_temperature"].get<std::string>();
+                        preset_data["bed_temp"] = std::stoi(temp_str);
+                    } else if (orcaslicer_json["bed_temperature"].is_number()) {
+                        preset_data["bed_temp"] = orcaslicer_json["bed_temperature"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse bed_temperature: " << e.what();
+                }
+            }
+            
+            // Определяем material_type из inherits
+            // Например: "Generic PLA @System" -> "PLA"
+            if (orcaslicer_json.contains("inherits")) {
+                std::string inherits = orcaslicer_json["inherits"].get<std::string>();
+                
+                // Извлекаем базовый тип материала из inherits
+                // "Generic PLA @System" -> "PLA"
+                // "Generic PETG @System" -> "PETG"
+                std::string material_type = "";
+                if (inherits.find("PLA") != std::string::npos) {
+                    material_type = "PLA";
+                } else if (inherits.find("PETG") != std::string::npos || inherits.find("PET") != std::string::npos) {
+                    material_type = "PETG";
+                } else if (inherits.find("ABS") != std::string::npos) {
+                    material_type = "ABS";
+                } else if (inherits.find("TPU") != std::string::npos) {
+                    material_type = "TPU";
+                } else if (inherits.find("ASA") != std::string::npos) {
+                    material_type = "ASA";
+                } else if (inherits.find("PC") != std::string::npos) {
+                    material_type = "PC";
+                } else if (inherits.find("PA") != std::string::npos || inherits.find("Nylon") != std::string::npos) {
+                    material_type = "PA";
+                } else if (inherits.find("PVA") != std::string::npos) {
+                    material_type = "PVA";
+                } else {
+                    // По умолчанию используем PLA
+                    material_type = "PLA";
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Unknown material type from inherits: " << inherits 
+                                              << ", using PLA as default";
+                }
+                
+                preset_data["material_type"] = material_type;
+            } else {
+                // Если inherits нет, используем PLA по умолчанию
+                preset_data["material_type"] = "PLA";
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: No inherits field in preset " << preset.name 
+                                          << ", using PLA as default";
+            }
+            
+            // Имя филамента (используем имя пресета)
+            preset_data["filament_name"] = preset.name;
+            
+            // Дополнительные параметры (опционально)
+            if (orcaslicer_json.contains("print_speed")) {
+                try {
+                    if (orcaslicer_json["print_speed"].is_string()) {
+                        std::string speed_str = orcaslicer_json["print_speed"].get<std::string>();
+                        preset_data["print_speed"] = std::stof(speed_str);
+                    } else if (orcaslicer_json["print_speed"].is_number()) {
+                        preset_data["print_speed"] = orcaslicer_json["print_speed"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse print_speed: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("travel_speed")) {
+                try {
+                    if (orcaslicer_json["travel_speed"].is_string()) {
+                        std::string speed_str = orcaslicer_json["travel_speed"].get<std::string>();
+                        preset_data["travel_speed"] = std::stof(speed_str);
+                    } else if (orcaslicer_json["travel_speed"].is_number()) {
+                        preset_data["travel_speed"] = orcaslicer_json["travel_speed"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse travel_speed: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("layer_height")) {
+                try {
+                    if (orcaslicer_json["layer_height"].is_string()) {
+                        std::string height_str = orcaslicer_json["layer_height"].get<std::string>();
+                        preset_data["layer_height"] = std::stof(height_str);
+                    } else if (orcaslicer_json["layer_height"].is_number()) {
+                        preset_data["layer_height"] = orcaslicer_json["layer_height"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse layer_height: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("first_layer_height")) {
+                try {
+                    if (orcaslicer_json["first_layer_height"].is_string()) {
+                        std::string height_str = orcaslicer_json["first_layer_height"].get<std::string>();
+                        preset_data["first_layer_height"] = std::stof(height_str);
+                    } else if (orcaslicer_json["first_layer_height"].is_number()) {
+                        preset_data["first_layer_height"] = orcaslicer_json["first_layer_height"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse first_layer_height: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("flow_rate")) {
+                try {
+                    if (orcaslicer_json["flow_rate"].is_string()) {
+                        std::string rate_str = orcaslicer_json["flow_rate"].get<std::string>();
+                        preset_data["flow_rate"] = std::stof(rate_str);
+                    } else if (orcaslicer_json["flow_rate"].is_number()) {
+                        preset_data["flow_rate"] = orcaslicer_json["flow_rate"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse flow_rate: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("fan_speed")) {
+                try {
+                    if (orcaslicer_json["fan_speed"].is_string()) {
+                        std::string speed_str = orcaslicer_json["fan_speed"].get<std::string>();
+                        preset_data["fan_speed"] = std::stoi(speed_str);
+                    } else if (orcaslicer_json["fan_speed"].is_number()) {
+                        preset_data["fan_speed"] = orcaslicer_json["fan_speed"].get<int>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fan_speed: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("retraction_length")) {
+                try {
+                    if (orcaslicer_json["retraction_length"].is_string()) {
+                        std::string length_str = orcaslicer_json["retraction_length"].get<std::string>();
+                        preset_data["retraction_length"] = std::stof(length_str);
+                    } else if (orcaslicer_json["retraction_length"].is_number()) {
+                        preset_data["retraction_length"] = orcaslicer_json["retraction_length"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse retraction_length: " << e.what();
+                }
+            }
+            
+            if (orcaslicer_json.contains("retraction_speed")) {
+                try {
+                    if (orcaslicer_json["retraction_speed"].is_string()) {
+                        std::string speed_str = orcaslicer_json["retraction_speed"].get<std::string>();
+                        preset_data["retraction_speed"] = std::stof(speed_str);
+                    } else if (orcaslicer_json["retraction_speed"].is_number()) {
+                        preset_data["retraction_speed"] = orcaslicer_json["retraction_speed"].get<double>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse retraction_speed: " << e.what();
+                }
+            }
+            
+            // Метаданные
+            preset_data["source"] = "orcaslicer";
+            preset_data["active"] = false; // Черновик
+            
+            presets_json.push_back(preset_data);
+            preset_count++;
+            
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported preset: " << preset.name 
+                                   << " (external_id: " << preset.setting_id << ")";
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export preset " << preset.name 
+                                    << ": " << e.what();
+        }
+    }
+    
+    if (presets_json.empty()) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: No user filament presets to export";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("No user filament presets to export."),
+                "info"
+            );
+        });
+        return;
+    }
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported " << preset_count << " filament presets to JSON";
+    
+    // Лимит на количество профилей (50 для MVP)
+    const int MAX_PROFILES_PER_REQUEST = 50;
+    if (presets_json.size() > MAX_PROFILES_PER_REQUEST) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Too many presets (" << presets_json.size() 
+                                  << "), limiting to " << MAX_PROFILES_PER_REQUEST;
+        presets_json.resize(MAX_PROFILES_PER_REQUEST);
+    }
+    
+    // Формируем JSON payload для Backend
+    nlohmann::json payload;
+    payload["profiles"] = presets_json;
+    
+    std::string payload_json = payload.dump();
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sending " << presets_json.size() 
+                           << " filament presets to Backend (payload size: " << payload_json.size() << " bytes)";
+    
+    // Отправляем на Backend через API
+    FilamentHubClient client;
+    client.set_api_base_url(api_base_url);
+    
+    client.import_filament_presets(
+        access_token,
+        payload_json,
+        // on_complete: успешно импортировано
+        [this, presets_json](std::string response_body, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets import successful. Status: " << http_status;
+            
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status 
+                                        << " when importing filament presets";
+                CallAfter([this, http_status]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to export filament presets. HTTP status: %d"), http_status),
+                        "error"
+                    );
+                });
+                return;
+            }
+            
+            try {
+                // Парсим ответ от сервера
+                nlohmann::json response = nlohmann::json::parse(response_body);
+                
+                if (!response.contains("results")) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Invalid response from server. Please try again."),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                
+                // Сохраняем маппинги external_id → fhub_id
+                AppConfig* app_config = wxGetApp().app_config;
+                if (app_config == nullptr) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Failed to save preset mappings. Please try again."),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                
+                int success_count = 0;
+                int error_count = 0;
+                int updated_count = 0;
+                int created_count = 0;
+                
+                for (const auto& result : response["results"]) {
+                    std::string external_id = result.value("external_id", "");
+                    std::string status = result.value("status", "");
+                    int fhub_id = result.value("fhub_id", 0);
+                    
+                    if (status == "created") {
+                        created_count++;
+                        success_count++;
+                    } else if (status == "updated") {
+                        updated_count++;
+                        success_count++;
+                    } else if (status == "error" || status == "skipped") {
+                        error_count++;
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Preset " << external_id 
+                                                  << " import failed: " << result.value("message", "");
+                    }
+                    
+                    // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
+                    if (fhub_id > 0 && !external_id.empty()) {
+                        std::string mapping_key = CONFIG_KEY_PRESET_MAPPING + "_" + external_id;
+                        app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id 
+                                               << " -> fhub_id=" << fhub_id;
+                    }
+                }
+                
+                app_config->save();
+                
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets export completed. "
+                                       << "Created: " << created_count 
+                                       << ", Updated: " << updated_count
+                                       << ", Errors: " << error_count;
+                
+                // Показываем уведомление пользователю
+                CallAfter([this, success_count, error_count, created_count, updated_count]() {
+                    wxString message;
+                    if (error_count == 0) {
+                        if (created_count > 0 && updated_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d filament presets: %d created, %d updated."), 
+                                                      success_count, created_count, updated_count);
+                        } else if (created_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d filament presets (created)."), created_count);
+                        } else if (updated_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d filament presets (updated)."), updated_count);
+                        } else {
+                            message = _L("Filament presets exported successfully.");
+                        }
+                        show_notification_in_webview(message, "success");
+                    } else {
+                        message = wxString::Format(_L("Exported %d filament presets: %d successful, %d errors."), 
+                                                  success_count + error_count, success_count, error_count);
+                        show_notification_in_webview(message, "warning");
+                    }
+                });
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what() 
+                                        << ", Response: " << response_body.substr(0, 500);
+                CallAfter([this, e]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            }
+        },
+        // on_error: ошибка при импорте
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export filament presets. Error: " << error 
+                                    << ", Status: " << http_status;
+            
+            wxString error_msg;
+            if (http_status == 401) {
+                error_msg = _L("Your session has expired. Please login again.");
+            } else if (http_status == 403) {
+                error_msg = _L("Filament presets export is disabled in your FilamentHub settings. Please enable it in your profile settings.");
+            } else if (http_status == 400) {
+                error_msg = _L("Invalid request. Please check your presets and try again.");
+            } else if (http_status >= 500) {
+                error_msg = _L("Server error. Please try again later.");
+            } else {
+                error_msg = wxString::Format(_L("Failed to export filament presets: %s"), wxString::FromUTF8(error.c_str()));
+            }
+            
+            CallAfter([this, error_msg, http_status]() {
+                show_notification_in_webview(
+                    error_msg,
+                    http_status == 401 || http_status == 403 ? "warning" : "error"
+                );
+            });
+        }
+    );
+}
+
+// ============================================================================
+// Methods for exporting printer profiles to FilamentHub
+// ============================================================================
+
+void FilamentHubPanel::export_printer_profiles_to_filamenthub()
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_printer_profiles_to_filamenthub() CALLED ==========";
+    
+    // Проверяем авторизацию
+    std::string access_token;
+    int user_id;
+    if (!load_auth_token(access_token, user_id)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export printer profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Please login to export printer profiles to FilamentHub."),
+                "warning"
+            );
+        });
+        return;
+    }
+    
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export printer profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+    
+    // Проверяем разрешение на импорт printer profiles
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+    
+    client.get_current_user(
+        access_token,
+        // on_complete: проверяем разрешение allow_printer_profiles_import
+        [this, access_token, api_base_url](std::string json_body, unsigned http_status) {
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get user info for permission check. HTTP status: " << http_status;
+                CallAfter([this, http_status]() {
+                    if (http_status == 401) {
+                        show_notification_in_webview(
+                            _L("Your session has expired. Please login again."),
+                            "warning"
+                        );
+                    } else if (http_status == 403) {
+                        show_notification_in_webview(
+                            _L("Access denied. Please check your permissions."),
+                            "error"
+                        );
+                    } else {
+                        show_notification_in_webview(
+                            wxString::Format(_L("Failed to check permissions. HTTP status: %d"), http_status),
+                            "error"
+                        );
+                    }
+                });
+                return;
+            }
+            
+            try {
+                nlohmann::json user_json = nlohmann::json::parse(json_body);
+                bool allow_printer_import = user_json.value("allow_printer_profiles_import", true);
+                
+                if (!allow_printer_import) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Printer profiles import is disabled in user settings";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Printer profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings."),
+                            "warning"
+                        );
+                    });
+                    return;
+                }
+                
+                // Разрешение получено - продолжаем экспорт
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Permission check passed, proceeding with printer profiles export";
+                export_printer_profiles_to_filamenthub_internal(access_token, api_base_url);
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                CallAfter([this, e]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            }
+        },
+        // on_error: ошибка при проверке разрешений
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions. Error: " << error 
+                                    << ", Status: " << http_status;
+            CallAfter([this, http_status]() {
+                if (http_status == 401) {
+                    show_notification_in_webview(
+                        _L("Your session has expired. Please login again."),
+                        "warning"
+                    );
+                } else {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to check permissions: %s"), wxString::FromUTF8(error.c_str())),
+                        "error"
+                    );
+                }
+            });
+        }
+    );
+}
+
+void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_printer_profiles_to_filamenthub_internal() CALLED ==========";
+    
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export printer profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+    
+    // Получаем все пользовательские printer profiles (не системные)
+    PresetCollection& printers = bundle->printers;
+    std::vector<nlohmann::json> profiles_json;
+    
+    int profile_count = 0;
+    for (auto it = printers.begin(); it != printers.end(); ++it) {
+        const Preset& preset = *it;
+        
+        // Пропускаем системные пресеты
+        if (preset.is_system) {
+            continue;
+        }
+        
+        try {
+            // Получаем JSON конфигурацию пресета
+            nlohmann::json orcaslicer_json = preset.config.to_json();
+            
+            // Создаем JSON для Backend
+            nlohmann::json profile_data;
+            
+            // Базовые поля
+            profile_data["external_id"] = preset.setting_id; // Уникальный ID в OrcaSlicer
+            profile_data["name"] = preset.name;
+            profile_data["setting_id"] = preset.setting_id;
+            
+            // Проверяем маппинг (если профиль уже синхронизирован, добавляем fhub_id)
+            std::string mapping_key = CONFIG_KEY_PRINTER_PROFILE_MAPPING + "_" + preset.setting_id;
+            std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
+            if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+                try {
+                    int fhub_id = std::stoi(fhub_id_str);
+                    profile_data["fhub_id"] = fhub_id;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for printer profile external_id=" << preset.setting_id 
+                                           << " -> fhub_id=" << fhub_id;
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for printer profile external_id=" << preset.setting_id 
+                                        << ", will be created as new draft";
+            }
+            
+            // OrcaSlicer JSON формат (полный JSON профиль)
+            profile_data["orcaslicer_settings"] = orcaslicer_json;
+            
+            // Извлекаем базовые параметры для PrinterProfile
+            // vendor (из preset.vendor)
+            if (!preset.vendor.empty()) {
+                profile_data["vendor"] = preset.vendor;
+            }
+            
+            // description (из preset.description)
+            if (!preset.description.empty()) {
+                profile_data["description"] = preset.description;
+            }
+            
+            // source (из preset.is_system или preset.is_default)
+            profile_data["source"] = preset.is_system ? "system" : "user";
+            
+            // active (по умолчанию false - черновик)
+            profile_data["active"] = false;
+            
+            // Извлекаем дополнительные параметры из orcaslicer_json
+            // nozzle_diameters
+            if (orcaslicer_json.contains("nozzle_diameter")) {
+                try {
+                    if (orcaslicer_json["nozzle_diameter"].is_array()) {
+                        auto nozzles = orcaslicer_json["nozzle_diameter"].get<std::vector<std::string>>();
+                        std::vector<float> nozzle_diameters;
+                        for (const auto& nozzle_str : nozzles) {
+                            try {
+                                nozzle_diameters.push_back(std::stof(nozzle_str));
+                            } catch (const std::exception& e) {
+                                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse nozzle_diameter: " << nozzle_str;
+                            }
+                        }
+                        if (!nozzle_diameters.empty()) {
+                            profile_data["nozzle_diameters"] = nozzle_diameters;
+                        }
+                    } else if (orcaslicer_json["nozzle_diameter"].is_string()) {
+                        std::string nozzle_str = orcaslicer_json["nozzle_diameter"].get<std::string>();
+                        profile_data["nozzle_diameters"] = std::vector<float>{std::stof(nozzle_str)};
+                    } else if (orcaslicer_json["nozzle_diameter"].is_number()) {
+                        profile_data["nozzle_diameters"] = std::vector<float>{orcaslicer_json["nozzle_diameter"].get<float>()};
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse nozzle_diameter: " << e.what();
+                }
+            }
+            
+            // printable_area
+            if (orcaslicer_json.contains("printable_area")) {
+                try {
+                    if (orcaslicer_json["printable_area"].is_object()) {
+                        profile_data["printable_area"] = orcaslicer_json["printable_area"];
+                    } else if (orcaslicer_json["printable_area"].is_string()) {
+                        // Если это строка, пытаемся распарсить как JSON
+                        std::string area_str = orcaslicer_json["printable_area"].get<std::string>();
+                        try {
+                            profile_data["printable_area"] = nlohmann::json::parse(area_str);
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse printable_area as JSON: " << area_str;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse printable_area: " << e.what();
+                }
+            }
+            
+            // printable_height_mm
+            if (orcaslicer_json.contains("printable_height")) {
+                try {
+                    if (orcaslicer_json["printable_height"].is_string()) {
+                        std::string height_str = orcaslicer_json["printable_height"].get<std::string>();
+                        profile_data["printable_height_mm"] = std::stof(height_str);
+                    } else if (orcaslicer_json["printable_height"].is_number()) {
+                        profile_data["printable_height_mm"] = orcaslicer_json["printable_height"].get<float>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse printable_height: " << e.what();
+                }
+            }
+            
+            // start_gcode
+            if (orcaslicer_json.contains("start_gcode")) {
+                try {
+                    if (orcaslicer_json["start_gcode"].is_string()) {
+                        profile_data["start_gcode"] = orcaslicer_json["start_gcode"].get<std::string>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse start_gcode: " << e.what();
+                }
+            }
+            
+            // end_gcode
+            if (orcaslicer_json.contains("end_gcode")) {
+                try {
+                    if (orcaslicer_json["end_gcode"].is_string()) {
+                        profile_data["end_gcode"] = orcaslicer_json["end_gcode"].get<std::string>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse end_gcode: " << e.what();
+                }
+            }
+            
+            // default_print_profile_slug (из preset.default_print_profile или similar)
+            if (orcaslicer_json.contains("default_print_profile")) {
+                try {
+                    if (orcaslicer_json["default_print_profile"].is_string()) {
+                        profile_data["default_print_profile_slug"] = orcaslicer_json["default_print_profile"].get<std::string>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse default_print_profile: " << e.what();
+                }
+            }
+            
+            profiles_json.push_back(profile_data);
+            profile_count++;
+            
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported printer profile: " << preset.name 
+                                   << " (external_id: " << preset.setting_id << ")";
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export printer profile " << preset.name 
+                                    << ": " << e.what();
+        }
+    }
+    
+    if (profiles_json.empty()) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: No user printer profiles to export";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("No user printer profiles to export."),
+                "info"
+            );
+        });
+        return;
+    }
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported " << profile_count << " printer profiles to JSON";
+    
+    const int MAX_PROFILES_PER_REQUEST = 50;
+    if (profiles_json.size() > MAX_PROFILES_PER_REQUEST) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Too many printer profiles (" << profiles_json.size() 
+                                   << "), limiting to " << MAX_PROFILES_PER_REQUEST;
+        profiles_json.resize(MAX_PROFILES_PER_REQUEST);
+    }
+    
+    nlohmann::json payload;
+    payload["profiles"] = profiles_json;
+    
+    std::string payload_json = payload.dump();
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sending " << profiles_json.size() 
+                           << " printer profiles to Backend (payload size: " << payload_json.size() << " bytes)";
+    
+    FilamentHubClient client;
+    client.set_api_base_url(api_base_url);
+    
+    client.import_printer_profiles(
+        access_token,
+        payload_json,
+        [this, profiles_json](std::string response_body, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles import successful. Status: " << http_status;
+            
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status 
+                                        << " when importing printer profiles";
+                CallAfter([this, http_status]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to export printer profiles. HTTP status: %d"), http_status),
+                        "error"
+                    );
+                });
+                return;
+            }
+            
+            try {
+                nlohmann::json response = nlohmann::json::parse(response_body);
+                
+                if (!response.contains("results")) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Invalid response from server. Please try again."),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                
+                AppConfig* app_config = wxGetApp().app_config;
+                if (app_config == nullptr) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Failed to save profile mappings. Please try again."),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                
+                int success_count = 0;
+                int error_count = 0;
+                int updated_count = 0;
+                int created_count = 0;
+                
+                for (const auto& result : response["results"]) {
+                    std::string external_id = result.value("external_id", "");
+                    std::string status = result.value("status", "");
+                    int fhub_id = result.value("fhub_id", 0);
+                    
+                    if (status == "created") {
+                        created_count++;
+                        success_count++;
+                    } else if (status == "updated") {
+                        updated_count++;
+                        success_count++;
+                    } else if (status == "error" || status == "skipped") {
+                        error_count++;
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Printer profile " << external_id 
+                                                  << " import failed: " << result.value("message", "");
+                    }
+                    
+                    // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
+                    if (fhub_id > 0 && !external_id.empty()) {
+                        std::string mapping_key = CONFIG_KEY_PRINTER_PROFILE_MAPPING + "_" + external_id;
+                        app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id 
+                                               << " -> fhub_id=" << fhub_id;
+                    }
+                }
+                
+                app_config->save();
+                
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles export completed. "
+                                       << "Created: " << created_count 
+                                       << ", Updated: " << updated_count
+                                       << ", Errors: " << error_count;
+                
+                CallAfter([this, success_count, error_count, created_count, updated_count]() {
+                    wxString message;
+                    if (error_count == 0) {
+                        if (created_count > 0 && updated_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d printer profiles: %d created, %d updated."), 
+                                                      success_count, created_count, updated_count);
+                        } else if (created_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d printer profiles (created)."), created_count);
+                        } else if (updated_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d printer profiles (updated)."), updated_count);
+                        } else {
+                            message = _L("Printer profiles exported successfully.");
+                        }
+                        show_notification_in_webview(message, "success");
+                    } else {
+                        message = wxString::Format(_L("Exported %d printer profiles: %d successful, %d errors."), 
+                                                  success_count + error_count, success_count, error_count);
+                        show_notification_in_webview(message, "warning");
+                    }
+                });
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what() 
+                                        << ", Response: " << response_body.substr(0, 500);
+                CallAfter([this, e]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            }
+        },
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export printer profiles. Error: " << error 
+                                    << ", Status: " << http_status;
+            
+            wxString error_msg;
+            if (http_status == 401) {
+                error_msg = _L("Your session has expired. Please login again.");
+            } else if (http_status == 403) {
+                error_msg = _L("Printer profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings.");
+            } else if (http_status == 400) {
+                error_msg = _L("Invalid request. Please check your profiles and try again.");
+            } else if (http_status >= 500) {
+                error_msg = _L("Server error. Please try again later.");
+            } else {
+                error_msg = wxString::Format(_L("Failed to export printer profiles: %s"), wxString::FromUTF8(error.c_str()));
+            }
+            
+            CallAfter([this, error_msg, http_status]() {
+                show_notification_in_webview(
+                    error_msg,
+                    http_status == 401 || http_status == 403 ? "warning" : "error"
+                );
+            });
+        }
+    );
+}
+
+// ============================================================================
+// Methods for exporting print profiles to FilamentHub
+// ============================================================================
+
+void FilamentHubPanel::export_print_profiles_to_filamenthub()
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_print_profiles_to_filamenthub() CALLED ==========";
+    
+    // Проверяем авторизацию
+    std::string access_token;
+    int user_id;
+    if (!load_auth_token(access_token, user_id)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export print profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Please login to export print profiles to FilamentHub."),
+                "warning"
+            );
+        });
+        return;
+    }
+    
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export print profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+    
+    // Проверяем разрешение на импорт print profiles
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+    
+    client.get_current_user(
+        access_token,
+        // on_complete: проверяем разрешение allow_print_profiles_import
+        [this, access_token, api_base_url](std::string json_body, unsigned http_status) {
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get user info for permission check. HTTP status: " << http_status;
+                CallAfter([this, http_status]() {
+                    if (http_status == 401) {
+                        show_notification_in_webview(
+                            _L("Your session has expired. Please login again."),
+                            "warning"
+                        );
+                    } else if (http_status == 403) {
+                        show_notification_in_webview(
+                            _L("Access denied. Please check your permissions."),
+                            "error"
+                        );
+                    } else {
+                        show_notification_in_webview(
+                            wxString::Format(_L("Failed to check permissions. HTTP status: %d"), http_status),
+                            "error"
+                        );
+                    }
+                });
+                return;
+            }
+            
+            try {
+                nlohmann::json user_json = nlohmann::json::parse(json_body);
+                bool allow_print_import = user_json.value("allow_print_profiles_import", true);
+                
+                if (!allow_print_import) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Print profiles import is disabled in user settings";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Print profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings."),
+                            "warning"
+                        );
+                    });
+                    return;
+                }
+                
+                // Разрешение получено - продолжаем экспорт
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Permission check passed, proceeding with print profiles export";
+                export_print_profiles_to_filamenthub_internal(access_token, api_base_url);
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                CallAfter([this, e]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            }
+        },
+        // on_error: ошибка при проверке разрешений
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions. Error: " << error 
+                                    << ", Status: " << http_status;
+            CallAfter([this, http_status]() {
+                if (http_status == 401) {
+                    show_notification_in_webview(
+                        _L("Your session has expired. Please login again."),
+                        "warning"
+                    );
+                } else {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to check permissions: %s"), wxString::FromUTF8(error.c_str())),
+                        "error"
+                    );
+                }
+            });
+        }
+    );
+}
+
+void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_print_profiles_to_filamenthub_internal() CALLED ==========";
+    
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export print profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+    
+    // Получаем все пользовательские print profiles (не системные)
+    // В OrcaSlicer print profiles называются "process" presets и хранятся в bundle->prints
+    PresetCollection& prints = bundle->prints;
+    std::vector<nlohmann::json> profiles_json;
+    
+    int profile_count = 0;
+    for (auto it = prints.begin(); it != prints.end(); ++it) {
+        const Preset& preset = *it;
+        
+        // Пропускаем системные пресеты
+        if (preset.is_system) {
+            continue;
+        }
+        
+        try {
+            // Получаем JSON конфигурацию пресета
+            nlohmann::json orcaslicer_json = preset.config.to_json();
+            
+            // Создаем JSON для Backend
+            nlohmann::json profile_data;
+            
+            // Базовые поля
+            profile_data["external_id"] = preset.setting_id; // Уникальный ID в OrcaSlicer
+            profile_data["name"] = preset.name;
+            profile_data["setting_id"] = preset.setting_id;
+            
+            // Проверяем маппинг (если профиль уже синхронизирован, добавляем fhub_id)
+            std::string mapping_key = CONFIG_KEY_PRINT_PROFILE_MAPPING + "_" + preset.setting_id;
+            std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
+            if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+                try {
+                    int fhub_id = std::stoi(fhub_id_str);
+                    profile_data["fhub_id"] = fhub_id;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for print profile external_id=" << preset.setting_id 
+                                           << " -> fhub_id=" << fhub_id;
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for print profile external_id=" << preset.setting_id 
+                                        << ", will be created as new draft";
+            }
+            
+            // OrcaSlicer JSON формат (полный JSON профиль)
+            profile_data["orcaslicer_settings"] = orcaslicer_json;
+            
+            // Извлекаем базовые параметры для PrintProfile
+            // vendor (из preset.vendor)
+            if (!preset.vendor.empty()) {
+                profile_data["vendor"] = preset.vendor;
+            }
+            
+            // description (из preset.description)
+            if (!preset.description.empty()) {
+                profile_data["description"] = preset.description;
+            }
+            
+            // source (из preset.is_system или preset.is_default)
+            profile_data["source"] = preset.is_system ? "system" : "user";
+            
+            // active (по умолчанию false - черновик)
+            profile_data["active"] = false;
+            
+            // Извлекаем дополнительные параметры из orcaslicer_json
+            // category (из preset.type или similar)
+            if (orcaslicer_json.contains("layer_height")) {
+                try {
+                    if (orcaslicer_json["layer_height"].is_string()) {
+                        std::string layer_height_str = orcaslicer_json["layer_height"].get<std::string>();
+                        float layer_height = std::stof(layer_height_str);
+                        profile_data["layer_height_mm"] = layer_height;
+                    } else if (orcaslicer_json["layer_height"].is_number()) {
+                        profile_data["layer_height_mm"] = orcaslicer_json["layer_height"].get<float>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse layer_height: " << e.what();
+                }
+            }
+            
+            // quality_tier (из preset.name или similar)
+            // Например, "0.20mm Standard", "0.30mm Draft" и т.д.
+            // Можно извлечь из имени или из параметров профиля
+            if (orcaslicer_json.contains("quality")) {
+                try {
+                    if (orcaslicer_json["quality"].is_string()) {
+                        profile_data["quality_tier"] = orcaslicer_json["quality"].get<std::string>();
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse quality: " << e.what();
+                }
+            }
+            
+            // default_nozzle (из preset.name или similar)
+            // Например, "0.4mm", "0.6mm" и т.д.
+            if (orcaslicer_json.contains("nozzle_diameter")) {
+                try {
+                    if (orcaslicer_json["nozzle_diameter"].is_string()) {
+                        std::string nozzle_str = orcaslicer_json["nozzle_diameter"].get<std::string>();
+                        profile_data["default_nozzle"] = nozzle_str;
+                    } else if (orcaslicer_json["nozzle_diameter"].is_number()) {
+                        profile_data["default_nozzle"] = std::to_string(orcaslicer_json["nozzle_diameter"].get<float>()) + "mm";
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse nozzle_diameter: " << e.what();
+                }
+            }
+            
+            // compatible_printers (из preset.compatible_printers или similar)
+            // В OrcaSlicer print profiles могут быть совместимы с определенными printer profiles
+            if (orcaslicer_json.contains("compatible_printers")) {
+                try {
+                    if (orcaslicer_json["compatible_printers"].is_array()) {
+                        auto printers = orcaslicer_json["compatible_printers"].get<std::vector<std::string>>();
+                        profile_data["compatible_printers"] = printers;
+                    } else if (orcaslicer_json["compatible_printers"].is_string()) {
+                        std::string printers_str = orcaslicer_json["compatible_printers"].get<std::string>();
+                        // Парсим строку как список через запятую
+                        std::vector<std::string> printers;
+                        std::istringstream iss(printers_str);
+                        std::string printer;
+                        while (std::getline(iss, printer, ',')) {
+                            // Удаляем пробелы
+                            printer.erase(0, printer.find_first_not_of(" \t"));
+                            printer.erase(printer.find_last_not_of(" \t") + 1);
+                            if (!printer.empty()) {
+                                printers.push_back(printer);
+                            }
+                        }
+                        if (!printers.empty()) {
+                            profile_data["compatible_printers"] = printers;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse compatible_printers: " << e.what();
+                }
+            }
+            
+            // compatible_filaments (из preset.compatible_filaments или similar)
+            // В OrcaSlicer print profiles могут быть совместимы с определенными filament presets
+            if (orcaslicer_json.contains("compatible_filaments")) {
+                try {
+                    if (orcaslicer_json["compatible_filaments"].is_array()) {
+                        auto filaments = orcaslicer_json["compatible_filaments"].get<std::vector<std::string>>();
+                        profile_data["compatible_filaments"] = filaments;
+                    } else if (orcaslicer_json["compatible_filaments"].is_string()) {
+                        std::string filaments_str = orcaslicer_json["compatible_filaments"].get<std::string>();
+                        // Парсим строку как список через запятую
+                        std::vector<std::string> filaments;
+                        std::istringstream iss(filaments_str);
+                        std::string filament;
+                        while (std::getline(iss, filament, ',')) {
+                            // Удаляем пробелы
+                            filament.erase(0, filament.find_first_not_of(" \t"));
+                            filament.erase(filament.find_last_not_of(" \t") + 1);
+                            if (!filament.empty()) {
+                                filaments.push_back(filament);
+                            }
+                        }
+                        if (!filaments.empty()) {
+                            profile_data["compatible_filaments"] = filaments;
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse compatible_filaments: " << e.what();
+                }
+            }
+            
+            profiles_json.push_back(profile_data);
+            profile_count++;
+            
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported print profile: " << preset.name 
+                                  << " (external_id: " << preset.setting_id << ")";
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export print profile " << preset.name 
+                                    << ": " << e.what();
+        }
+    }
+    
+    if (profiles_json.empty()) {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: No user print profiles to export";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("No user print profiles to export."),
+                "info"
+            );
+        });
+        return;
+    }
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported " << profile_count << " print profiles to JSON";
+    
+    const int MAX_PROFILES_PER_REQUEST = 50;
+    if (profiles_json.size() > MAX_PROFILES_PER_REQUEST) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Too many print profiles (" << profiles_json.size() 
+                                  << "), limiting to " << MAX_PROFILES_PER_REQUEST;
+        profiles_json.resize(MAX_PROFILES_PER_REQUEST);
+    }
+    
+    nlohmann::json payload;
+    payload["profiles"] = profiles_json;
+    
+    std::string payload_json = payload.dump();
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sending " << profiles_json.size() 
+                          << " print profiles to Backend (payload size: " << payload_json.size() << " bytes)";
+    
+    FilamentHubClient client;
+    client.set_api_base_url(api_base_url);
+    
+    client.import_print_profiles(
+        access_token,
+        payload_json,
+        [this, profiles_json](std::string response_body, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles import successful. Status: " << http_status;
+            
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status 
+                                        << " when importing print profiles";
+                CallAfter([this, http_status]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to export print profiles. HTTP status: %d"), http_status),
+                        "error"
+                    );
+                });
+                return;
+            }
+            
+            try {
+                nlohmann::json response = nlohmann::json::parse(response_body);
+                
+                if (!response.contains("results")) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Invalid response from server. Please try again."),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                
+                AppConfig* app_config = wxGetApp().app_config;
+                if (app_config == nullptr) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
+                    CallAfter([this]() {
+                        show_notification_in_webview(
+                            _L("Failed to save profile mappings. Please try again."),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                
+                int success_count = 0;
+                int error_count = 0;
+                int updated_count = 0;
+                int created_count = 0;
+                
+                for (const auto& result : response["results"]) {
+                    std::string external_id = result.value("external_id", "");
+                    std::string status = result.value("status", "");
+                    int fhub_id = result.value("fhub_id", 0);
+                    
+                    if (status == "created") {
+                        created_count++;
+                        success_count++;
+                    } else if (status == "updated") {
+                        updated_count++;
+                        success_count++;
+                    } else if (status == "error" || status == "skipped") {
+                        error_count++;
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Print profile " << external_id 
+                                                  << " import failed: " << result.value("message", "");
+                    }
+                    
+                    // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
+                    if (fhub_id > 0 && !external_id.empty()) {
+                        std::string mapping_key = CONFIG_KEY_PRINT_PROFILE_MAPPING + "_" + external_id;
+                        app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id 
+                                              << " -> fhub_id=" << fhub_id;
+                    }
+                }
+                
+                app_config->save();
+                
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles export completed. "
+                                      << "Created: " << created_count 
+                                      << ", Updated: " << updated_count
+                                      << ", Errors: " << error_count;
+                
+                CallAfter([this, success_count, error_count, created_count, updated_count]() {
+                    wxString message;
+                    if (error_count == 0) {
+                        if (created_count > 0 && updated_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d print profiles: %d created, %d updated."), 
+                                                      success_count, created_count, updated_count);
+                        } else if (created_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d print profiles (created)."), created_count);
+                        } else if (updated_count > 0) {
+                            message = wxString::Format(_L("Successfully exported %d print profiles (updated)."), updated_count);
+                        } else {
+                            message = _L("Print profiles exported successfully.");
+                        }
+                        show_notification_in_webview(message, "success");
+                    } else {
+                        message = wxString::Format(_L("Exported %d print profiles: %d successful, %d errors."), 
+                                                  success_count + error_count, success_count, error_count);
+                        show_notification_in_webview(message, "warning");
+                    }
+                });
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what() 
+                                        << ", Response: " << response_body.substr(0, 500);
+                CallAfter([this, e]() {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            }
+        },
+        [this](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export print profiles. Error: " << error 
+                                    << ", Status: " << http_status;
+            
+            wxString error_msg;
+            if (http_status == 401) {
+                error_msg = _L("Your session has expired. Please login again.");
+            } else if (http_status == 403) {
+                error_msg = _L("Print profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings.");
+            } else if (http_status == 400) {
+                error_msg = _L("Invalid request. Please check your profiles and try again.");
+            } else if (http_status >= 500) {
+                error_msg = _L("Server error. Please try again later.");
+            } else {
+                error_msg = wxString::Format(_L("Failed to export print profiles: %s"), wxString::FromUTF8(error.c_str()));
+            }
+            
+            CallAfter([this, error_msg, http_status]() {
+                show_notification_in_webview(
+                    error_msg,
+                    http_status == 401 || http_status == 403 ? "warning" : "error"
+                );
+            });
+        }
+    );
 }
 
 }} // namespace Slic3r::GUI

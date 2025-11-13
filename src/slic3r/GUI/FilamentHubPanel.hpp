@@ -175,6 +175,19 @@ private:
      * \param force_full_sync If true, syncs all presets regardless of last_sync_time
      */
     void synchronize_presets(bool force_full_sync = false);
+    
+    /**
+     * \brief Continue sync after token validation
+     * 
+     * Internal function called after token validation succeeds.
+     * Performs the actual synchronization of presets.
+     * 
+     * \param user_id User ID
+     * \param force_full_sync If true, syncs all presets regardless of last_sync_time
+     * \param api_base_url API base URL
+     * \param access_token Validated access token
+     */
+    void continue_sync_after_token_validation(int user_id, bool force_full_sync, const std::string& api_base_url, const std::string& access_token);
 
     /**
      * \brief Synchronize user printer profiles from FilamentHub
@@ -198,7 +211,69 @@ private:
      */
     void synchronize_print_profiles(bool force_full_sync = false);
 
+    /**
+     * \brief Export filament presets to FilamentHub
+     * 
+     * Exports all user filament presets from OrcaSlicer to FilamentHub as drafts.
+     * Sends presets to Backend via API, Backend creates drafts and returns mappings.
+     * 
+     * This is a minimal implementation - all business logic is on Backend.
+     * C++ only gets presets from PresetBundle, converts to JSON, and sends to API.
+     * 
+     * Checks user permissions before exporting.
+     */
+    void export_filament_presets_to_filamenthub();
+
+    /**
+     * \brief Export printer profiles to FilamentHub
+     * 
+     * Exports all user printer profiles from OrcaSlicer to FilamentHub as drafts.
+     * Sends profiles to Backend via API, Backend creates drafts and returns mappings.
+     * 
+     * This is a minimal implementation - all business logic is on Backend.
+     * C++ only gets profiles from PresetBundle, converts to JSON, and sends to API.
+     * 
+     * Checks user permissions before exporting.
+     */
+    void export_printer_profiles_to_filamenthub();
+
+    /**
+     * \brief Export print profiles to FilamentHub
+     * 
+     * Exports all user print profiles from OrcaSlicer to FilamentHub as drafts.
+     * Sends profiles to Backend via API, Backend creates drafts and returns mappings.
+     * 
+     * This is a minimal implementation - all business logic is on Backend.
+     * C++ only gets profiles from PresetBundle, converts to JSON, and sends to API.
+     * 
+     * Checks user permissions before exporting.
+     */
+    void export_print_profiles_to_filamenthub();
+
 private:
+    /**
+     * \brief Internal method to export filament presets (called after permission check)
+     * 
+     * \param access_token JWT access token
+     * \param api_base_url API base URL
+     */
+    void export_filament_presets_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url);
+
+    /**
+     * \brief Internal method to export printer profiles (called after permission check)
+     * 
+     * \param access_token JWT access token
+     * \param api_base_url API base URL
+     */
+    void export_printer_profiles_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url);
+
+    /**
+     * \brief Internal method to export print profiles (called after permission check)
+     * 
+     * \param access_token JWT access token
+     * \param api_base_url API base URL
+     */
+    void export_print_profiles_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url);
     /**
      * \brief Save access token and user_id to AppConfig
      */
@@ -212,6 +287,17 @@ private:
      * \return true if token was found, false otherwise
      */
     bool load_auth_token(std::string& access_token, int& user_id);
+    
+    /**
+     * \brief Diagnostic function to extract exp from JWT token (without signature verification)
+     * 
+     * Parses JWT token and extracts exp claim for diagnostics.
+     * Does NOT verify signature or expiration - only for diagnostic purposes.
+     * 
+     * \param token JWT token string
+     * \return exp timestamp if found, 0 otherwise
+     */
+    long long extract_jwt_exp_for_diagnostics(const std::string& token);
     
     /**
      * \brief Save preset mapping (preset_id → bundle_preset_name) to AppConfig
@@ -404,6 +490,24 @@ private:
     void update_ui_for_login_state(bool is_logged_in);
     
     /**
+     * \brief Update active button style based on current page
+     * 
+     * Sets the active button (corresponding to current page) to Confirm style (green),
+     * and resets other navigation buttons to Regular style.
+     */
+    void update_active_button_style();
+    
+    /**
+     * \brief Navigate to URL without page reload using React Router
+     * 
+     * Uses JavaScript to navigate via React Router without reloading the page.
+     * This is faster and preserves React state.
+     * 
+     * \param path URL path (e.g., "/", "/profile", "/admin")
+     */
+    void navigate_without_reload(const wxString& path);
+    
+    /**
      * \brief Update unread notifications count
      * 
      * Fetches unread notifications count from API and updates the badge on the notifications button.
@@ -444,6 +548,8 @@ private:
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     int m_unread_notifications_count { 0 }; // Unread notifications count
+    wxMenu* m_notifications_menu { nullptr }; // Popup menu for notifications
+    std::string m_active_page { "" }; // Currently active page ("catalog", "profile", "admin", etc.)
     
     // Async preset import queue
     struct PresetImportTask {
@@ -477,6 +583,14 @@ private:
     void update_frontend_url(const wxString& url, bool persist = true, bool reload = true);
     void update_api_base_url(const std::string& url, bool persist = true);
     wxString build_frontend_url(const wxString& path_suffix = wxEmptyString) const;
+    
+    /**
+     * \brief Helper function to set button style with square corners
+     * 
+     * Sets button style and corner radius to 0 (square corners) in one call.
+     * This is needed because SetStyle() for ButtonType::Compact automatically sets corner radius to 8 DIP.
+     */
+    void set_button_square_style(Button* button, ButtonStyle style);
 
     void import_profile_internal(int preset_id, const wxString& sequence_id, std::string api_base_url);
     

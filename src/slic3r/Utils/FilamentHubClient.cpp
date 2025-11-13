@@ -540,6 +540,38 @@ void FilamentHubClient::import_print_profiles(
     }
 }
 
+void FilamentHubClient::import_filament_presets(
+    const std::string& access_token,
+    const std::string& presets_json,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/orcaslicer/filaments/import";
+        
+        Http::post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .set_post_body(presets_json)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets import successful. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets import failed. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in import_filament_presets: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
 void FilamentHubClient::delete_preset(
     int preset_id,
     const std::string& access_token,

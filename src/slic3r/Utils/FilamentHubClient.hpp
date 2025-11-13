@@ -276,6 +276,23 @@ public:
     ) const;
 
     /**
+     * \brief Import filament presets to FilamentHub
+     * 
+     * Sends filament presets from OrcaSlicer to FilamentHub for synchronisation.
+     * 
+     * \param access_token JWT access token
+     * \param presets_json JSON array of filament presets in OrcaSlicer format
+     * \param on_complete Called when import succeeds. Parameters: (response_body, http_status)
+     * \param on_error Called when import fails. Parameters: (response_body, error_message, http_status)
+     */
+    void import_filament_presets(
+        const std::string& access_token,
+        const std::string& presets_json,
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
      * \brief Delete preset from FilamentHub
      * 
      * Deletes a preset from FilamentHub. Only the owner can delete their own presets.

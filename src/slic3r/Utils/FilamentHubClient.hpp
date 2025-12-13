@@ -154,6 +154,24 @@ public:
     ) const;
 
     /**
+     * \brief Download preset .info file in INI format
+     * 
+     * Downloads a preset .info file from FilamentHub API in OrcaSlicer-compatible INI format.
+     * This is used to preserve FilamentHub metadata (user_id, setting_id, updated_time) after import.
+     * 
+     * \param preset_id Preset ID in FilamentHub
+     * \param access_token JWT access token
+     * \param on_complete Called when download succeeds. Parameters: (info_content, http_status)
+     * \param on_error Called when download fails. Parameters: (response_body, error_message, http_status)
+     */
+    void download_profile_info(
+        int preset_id,
+        const std::string& access_token,
+        std::function<void(std::string /* info_content */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
      * \brief Get user's presets (created + saved from catalog)
      * 
      * Retrieves all presets belonging to the authenticated user.
@@ -337,6 +355,21 @@ public:
      * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)
      */
     void get_unread_notifications_count(
+        const std::string& access_token,
+        std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    ) const;
+
+    /**
+     * \brief Get presets statistics
+     * 
+     * Retrieves statistics about user's presets (total count and synced count).
+     * 
+     * \param access_token JWT access token
+     * \param on_complete Called when request succeeds. Parameters: (response_body with total_presets and synced_presets, http_status)
+     * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)
+     */
+    void get_presets_stats(
         const std::string& access_token,
         std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error

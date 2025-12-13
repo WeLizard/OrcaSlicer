@@ -73,6 +73,29 @@
 namespace Slic3r {
 namespace GUI {
 
+// Helper function to serialize DynamicPrintConfig to JSON
+static nlohmann::json get_config_json(const DynamicPrintConfig& config) {
+    nlohmann::json j;
+    
+    // Record all the key-values
+    for (const std::string &opt_key : config.keys()) {
+        const ConfigOption *opt = config.option(opt_key);
+        if (opt->is_scalar()) {
+            if (opt->type() == coString)
+                j[opt_key] = (dynamic_cast<const ConfigOptionString *>(opt))->value;
+            else
+                j[opt_key] = opt->serialize();
+        } else {
+            const ConfigOptionVectorBase *vec = static_cast<const ConfigOptionVectorBase *>(opt);
+            std::vector<std::string> string_values = vec->vserialize();
+            nlohmann::json j_array(string_values);
+            j[opt_key] = j_array;
+        }
+    }
+    
+    return j;
+}
+
 // Static member initialization
 const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "http://localhost:3000";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";
@@ -128,7 +151,7 @@ void FilamentHubPanel::init()
     wxBoxSizer* info_sizer = new wxBoxSizer(wxHORIZONTAL);
     
     // User info (left side)
-    m_user_name_label = new wxStaticText(m_info_panel, wxID_ANY, _("Not logged in"), wxDefaultPosition, wxDefaultSize);
+    m_user_name_label = new wxStaticText(m_info_panel, wxID_ANY, _("Sign in to unlock full functionality"), wxDefaultPosition, wxDefaultSize);
     m_user_name_label->SetFont(wxFont(12, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD));
     info_sizer->Add(m_user_name_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 10);
     
@@ -179,10 +202,21 @@ void FilamentHubPanel::init()
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync button hidden by default (will be shown when logged in)";
     info_sizer->Add(m_sync_button, 0, wxALIGN_CENTER_VERTICAL);
 
+    // Settings button - only visible in debug/dev builds, hidden in release
+    // Allows changing Frontend URL and API Base URL for development/debugging
     m_settings_button = new Button(m_info_panel, _("Settings"));
     set_button_square_style(m_settings_button, ButtonStyle::Regular);
     m_settings_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_settings_dialog(); });
-    info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL);
+    #ifndef NDEBUG
+        // Show settings button only in debug builds
+        info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL);
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Settings button enabled (DEBUG build)";
+    #else
+        // Hide settings button in release builds
+        m_settings_button->Hide();
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Settings button hidden (RELEASE build)";
+        info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL); // Add but hidden
+    #endif
     
     // Refresh button - reloads the current page
     m_refresh_button = new Button(m_info_panel, _("Refresh"));
@@ -190,22 +224,11 @@ void FilamentHubPanel::init()
     m_refresh_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { reload(); });
     info_sizer->Add(m_refresh_button, 0, wxALIGN_CENTER_VERTICAL);
     
-    // Notifications button - shows notifications dropdown (only if logged in)
-    // Text will be updated dynamically: "Notifications" or "Notifications: X"
-    m_notifications_button = new Button(m_info_panel, _("Notifications"));
-    set_button_square_style(m_notifications_button, ButtonStyle::Regular);
-    m_notifications_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
-        // Show popup menu with notifications
-        show_notifications_dropdown();
-    });
-    m_notifications_button->Hide(); // Hidden by default (shown when logged in)
-    
-    // Badge is no longer needed - count is shown directly on button
-    // Keep m_notifications_badge for backward compatibility but hide it
-    m_notifications_badge = new wxStaticText(m_info_panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
-    m_notifications_badge->Hide(); // Always hidden - count shown on button instead
-    
-    info_sizer->Add(m_notifications_button, 0, wxALIGN_CENTER_VERTICAL);
+    // Notifications button - REMOVED from C++ UI
+    // Notifications are now displayed in WebView as a floating button (bell icon)
+    // This keeps UI consistent with the web version
+    m_notifications_button = nullptr; // Not used anymore
+    m_notifications_badge = nullptr; // Not used anymore
     
     // Admin button - opens admin panel (only if admin)
     m_admin_button = new Button(m_info_panel, _("Admin"));
@@ -633,11 +656,16 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
             });
         } else if (command == "export_filament_presets") {
             // User wants to export filament presets from OrcaSlicer to FilamentHub
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Export filament presets command received from Frontend";
+            static int cmd_counter = 0;
+            cmd_counter++;
+            int current_cmd = cmd_counter; // Локальная копия для захвата в лямбда
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [COMMAND #" << current_cmd << "] Export filament presets command received from Frontend";
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [COMMAND TRACE] sequence_id=" << sequence_id.ToStdString();
             
             // Вызываем export_filament_presets_to_filamenthub асинхронно
             // Результат будет отправлен через show_notification_in_webview
-            CallAfter([this]() {
+            CallAfter([this, current_cmd]() {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [CALLAFTER #" << current_cmd << "] Executing export_filament_presets_to_filamenthub() in UI thread";
                 export_filament_presets_to_filamenthub();
             });
             
@@ -844,14 +872,25 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
 
 void FilamentHubPanel::synchronize_presets(bool force_full_sync)
 {
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== [SYNC START] synchronize_presets() CALLED ==========";
+    static int sync_call_counter = 0;
+    sync_call_counter++;
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== [SYNC START] synchronize_presets() CALLED (call #" << sync_call_counter << ") ==========";
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 1] force_full_sync=" << (force_full_sync ? "true" : "false");
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false") 
+                            << ", m_full_sync_attempted=" << (m_full_sync_attempted ? "true" : "false");
     
     // ВАЖНО: Проверяем, не идет ли уже синхронизация ПЕРЕД установкой флага
     // Это предотвращает повторный запуск синхронизации
     if (m_is_syncing) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Sync already in progress, skipping";
         return;
+    }
+    
+    // Сбрасываем флаг защиты от зацикливания при новом запуске синхронизации
+    if (force_full_sync) {
+        m_full_sync_attempted = false;
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 1.1] Reset m_full_sync_attempted=false for full sync";
     }
     
     // Устанавливаем флаг синхронизации и обновляем UI
@@ -1164,9 +1203,12 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 // Если список пуст И мы не делали полную синхронизацию И есть last_sync_time,
                 // это может означать, что пресеты были удалены локально, но не обновлялись в FilamentHub
                 // В этом случае делаем полную синхронизацию, чтобы восстановить все пресеты
-                if (presets.empty() && !force_full_sync && !updated_since.empty()) {
+                // КРИТИЧНО: Защита от зацикливания - проверяем флаг m_full_sync_attempted
+                if (presets.empty() && !force_full_sync && !updated_since.empty() && !m_full_sync_attempted) {
                     BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] API returned empty list, but last_sync_time exists. "
                                                << "This might indicate locally deleted presets. Performing full sync to restore all presets...";
+                    // Устанавливаем флаг защиты от зацикливания
+                    m_full_sync_attempted = true;
                     // Очищаем last_sync_time и делаем полную синхронизацию
                     save_last_sync_time(user_id, ""); // Очищаем last_sync_time
                     // Уменьшаем счетчик (он был увеличен выше после 200 OK)
@@ -1187,6 +1229,27 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                         synchronize_presets(true); // Полная синхронизация (без updated_since)
                     });
                     return;
+                } else if (presets.empty() && !force_full_sync && !updated_since.empty() && m_full_sync_attempted) {
+                    // Уже пытались полную синхронизацию - не зацикливаемся
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] Full sync already attempted, skipping to prevent infinite loop";
+                    // Уменьшаем счетчик
+                    m_active_syncs--;
+                    CallAfter([this]() {
+                        m_is_syncing = false;
+                        if (m_sync_progress) {
+                            m_sync_progress->Hide();
+                        }
+                        if (m_sync_status_label) {
+                            m_sync_status_label->Hide();
+                        }
+                        update_sync_button_state(false);
+                        m_info_panel->Layout();
+                        show_notification_in_webview(
+                            _L("No presets to sync. All presets may have sync disabled."),
+                            "info"
+                        );
+                    });
+                    return;
                 }
                 
                 if (presets.empty()) {
@@ -1196,6 +1259,10 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                         m_active_syncs--;
                         m_is_syncing = false;
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
+                        // Синхронизируем printer и print profiles (второстепенные, после основного - filament presets)
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Starting printer and print profiles sync after empty filament presets sync...";
+                        synchronize_printer_profiles(false); // Incremental sync
+                        synchronize_print_profiles(false); // Incremental sync
                         // Скрываем прогресс-бар
                         if (m_sync_progress) {
                             m_sync_progress->Hide();
@@ -1272,9 +1339,10 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 // Вместо этого добавляем пресеты в очередь и обработаем их позже через CallAfter
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14] Adding " << presets.size() << " presets to import queue...";
                 
-                // Сохраняем токен и URL для последующей обработки
+                // Сохраняем токен, URL и user_id для последующей обработки
                 std::string access_token_for_queue = access_token;
                 std::string api_base_url_for_queue = api_base_url;
+                int user_id_for_queue = user_id; // КРИТИЧНО: Сохраняем user_id для обновления last_sync_time
                 
                 // Добавляем пресеты в очередь
                 {
@@ -1293,6 +1361,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                         task.preset_name = preset_name;
                         task.access_token = access_token_for_queue;
                         task.api_base_url = api_base_url_for_queue;
+                        task.user_id = user_id_for_queue; // КРИТИЧНО: Сохраняем user_id
                         
                         m_preset_import_queue.push_back(task);
                         BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14.1] Added preset " << preset_id 
@@ -1383,14 +1452,11 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] No deleted presets found";
                 }
                 
-                // 9. Обновляем last_sync_time (ISO 8601 format)
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16] Updating last_sync_time...";
-                std::time_t now = std::time(nullptr);
-                std::stringstream ss;
-                ss << std::put_time(std::gmtime(&now), "%Y-%m-%dT%H:%M:%S.000000");
-                std::string current_time = ss.str();
-                save_last_sync_time(user_id, current_time);
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16.1] Saved last_sync_time=" << current_time;
+                // 9. КРИТИЧНО: НЕ обновляем last_sync_time здесь!
+                // last_sync_time будет обновлен ПОСЛЕ завершения импорта всех пресетов из очереди
+                // в process_preset_import_queue() после успешного импорта всех пресетов
+                // Это предотвращает потерю пресетов при прерывании синхронизации
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16] Presets added to queue. last_sync_time will be updated after all presets are imported.";
                 
                 // 10. Завершаем синхронизацию - обновляем UI
                 // ВАЖНО: Синхронизация еще не завершена полностью - пресеты обрабатываются через очередь
@@ -1552,8 +1618,14 @@ void FilamentHubPanel::send_response(const wxString& command, const wxString& st
 
 void FilamentHubPanel::show_notification_in_webview(const wxString& message, const wxString& type)
 {
+    static int show_notif_counter = 0;
+    show_notif_counter++;
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SHOW_NOTIFICATION #" << show_notif_counter << "] type=" << type.ToStdString() 
+                            << ", message=" << message.ToStdString();
+    
     if (m_browser == nullptr) {
-        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot show notification, WebView is null";
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SHOW_NOTIFICATION #" << show_notif_counter << "] Cannot show notification, WebView is null";
         return;
     }
     
@@ -2211,7 +2283,8 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
         preset_id,
         access_token,
         // on_complete: профиль успешно скачан
-        [this, preset_id, preset_name, result](std::string json_content, unsigned http_status) {
+        // ВАЖНО: Захватываем access_token для передачи во вложенную лямбду CallAfter
+        [this, preset_id, preset_name, result, access_token](std::string json_content, unsigned http_status) {
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 5] ========== download_profile on_complete CALLBACK ==========";
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 5.1] Preset " << preset_id << " downloaded. "
                                     << "HTTP status: " << http_status 
@@ -2293,7 +2366,8 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                 // но мы используем CallAfter для гарантии выполнения в UI потоке
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 10] Scheduling import via CallAfter (UI thread)...";
                 // ВАЖНО: Захватываем file_path по значению (копируем), затем создадим неконстантную копию внутри лямбды
-                CallAfter([this, result, preset_id, preset_name_to_save, file_path]() {
+                // Также захватываем access_token для update_preset_info_file
+                CallAfter([this, result, preset_id, preset_name_to_save, file_path, access_token]() {
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 11] ========== CallAfter CALLBACK EXECUTED (UI thread) ==========";
                     try {
                         // Импортируем профиль через PresetBundle
@@ -2364,6 +2438,12 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                             save_preset_mapping(preset_id, actual_preset_name);
                             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 11.9.1] Saved mapping preset_id=" << preset_id 
                                                    << " -> bundle_preset_name=" << actual_preset_name;
+                            
+                            // Обновляем .info файл с метаданными FilamentHub
+                            // ВАЖНО: Это нужно делать ПОСЛЕ импорта, так как import_json_presets() создаёт .info файл с пустыми значениями
+                            // Мы скачиваем правильный .info файл из API и обновляем файл пресета
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 11.10] Updating .info file with FilamentHub metadata...";
+                            update_preset_info_file(preset_id, actual_preset_name, access_token);
                             
                             // ВАЖНО: НЕ вызываем load_current_presets() здесь, чтобы не перезагружать все пресеты после каждого импорта
                             // Это предотвращает обновление .info файлов не-FilamentHub пресетов
@@ -2451,6 +2531,129 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
     return true;
 }
 
+void FilamentHubPanel::update_preset_info_file(int preset_id, const std::string& preset_name, const std::string& access_token)
+{
+    static int info_update_counter = 0;
+    info_update_counter++;
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [INFO UPDATE #" << info_update_counter << "] Updating .info file for preset_id=" << preset_id 
+                           << ", preset_name='" << preset_name << "'";
+    
+    // Находим импортированный пресет
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot update .info file";
+        return;
+    }
+    
+    PresetCollection& filaments = bundle->filaments;
+    Preset* preset = filaments.find_preset2(preset_name, true);
+    
+    if (preset == nullptr || preset->is_system) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Preset not found or is system: " << preset_name;
+        return;
+    }
+    
+    if (preset->file.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Preset file path is empty, cannot update .info file";
+        return;
+    }
+    
+    // Скачиваем .info файл из API
+    FilamentHubClient client;
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+    client.set_api_base_url(api_base_url);
+    
+    client.download_profile_info(
+        preset_id,
+        access_token,
+        // on_complete: .info файл успешно скачан
+        [this, preset, preset_name](std::string info_content, unsigned http_status) {
+            if (http_status != 200) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to download .info file. HTTP status: " << http_status;
+                return;
+            }
+            
+            if (info_content.empty()) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: .info file content is empty";
+                return;
+            }
+            
+            // Определяем путь к .info файлу
+            boost::filesystem::path info_file_path(preset->file);
+            info_file_path.replace_extension(".info");
+            
+            // Сохраняем .info файл
+            try {
+                boost::filesystem::ofstream info_file(info_file_path);
+                if (!info_file.is_open()) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to open .info file for writing: " << info_file_path.string();
+                    return;
+                }
+                
+                info_file << info_content;
+                info_file.close();
+                
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Successfully updated .info file: " << info_file_path.string();
+                
+                // ВАЖНО: Обновляем поля Preset объекта из .info файла, чтобы они были доступны в памяти
+                // Это нужно для корректной работы Preset::save_info() в будущем
+                // Парсим .info файл (INI формат)
+                std::istringstream info_stream(info_content);
+                std::string line;
+                while (std::getline(info_stream, line)) {
+                    // Пропускаем пустые строки и комментарии
+                    if (line.empty() || line[0] == '#') {
+                        continue;
+                    }
+                    
+                    // Парсим строку "key = value"
+                    size_t eq_pos = line.find('=');
+                    if (eq_pos == std::string::npos) {
+                        continue;
+                    }
+                    
+                    std::string key = line.substr(0, eq_pos);
+                    std::string value = line.substr(eq_pos + 1);
+                    
+                    // Убираем пробелы
+                    boost::algorithm::trim(key);
+                    boost::algorithm::trim(value);
+                    
+                    // Обновляем поля Preset объекта
+                    if (key == "user_id") {
+                        preset->user_id = value;
+                    } else if (key == "setting_id") {
+                        preset->setting_id = value;
+                    } else if (key == "base_id") {
+                        preset->base_id = value;
+                    } else if (key == "updated_time") {
+                        try {
+                            preset->updated_time = std::stoll(value);
+                        } catch (...) {
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse updated_time: " << value;
+                        }
+                    } else if (key == "sync_info") {
+                        preset->sync_info = value;
+                    }
+                }
+                
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Updated Preset object fields from .info file: "
+                                       << "user_id=" << preset->user_id 
+                                       << ", setting_id=" << preset->setting_id
+                                       << ", updated_time=" << preset->updated_time;
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception while saving .info file: " << e.what();
+            }
+        },
+        // on_error: ошибка при скачивании .info файла
+        [this, preset_name](std::string body, std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to download .info file for preset '" << preset_name 
+                                    << "'. Error: " << error << ", Status: " << http_status;
+        }
+    );
+}
+
 void FilamentHubPanel::import_preset_silent_with_callback(int preset_id, const std::string& preset_name,
                                                            const std::string& access_token,
                                                            std::function<void(bool success)> on_complete)
@@ -2477,7 +2680,8 @@ void FilamentHubPanel::import_preset_silent_with_callback(int preset_id, const s
         preset_id,
         access_token,
         // on_complete: profile successfully downloaded
-        [this, preset_id, preset_name, on_complete](std::string json_content, unsigned http_status) {
+        // ВАЖНО: Захватываем access_token для передачи во вложенную лямбду CallAfter
+        [this, preset_id, preset_name, on_complete, access_token](std::string json_content, unsigned http_status) {
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 5] ========== download_profile on_complete CALLBACK ==========";
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 5.1] Preset " << preset_id << " downloaded. "
                                     << "HTTP status: " << http_status
@@ -2522,7 +2726,8 @@ void FilamentHubPanel::import_preset_silent_with_callback(int preset_id, const s
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 9.1] Saved profile to temporary file: " << temp_file.string();
 
                 // Schedule the actual import in the UI thread
-                CallAfter([this, preset_id, on_complete, temp_file, new_name]() {
+                // Захватываем access_token для update_preset_info_file
+                CallAfter([this, preset_id, on_complete, temp_file, new_name, access_token]() {
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [IMPORT STEP 10] ========== CallAfter for UI import EXECUTED ==========";
                     bool success = false;
                     try {
@@ -2550,6 +2755,13 @@ void FilamentHubPanel::import_preset_silent_with_callback(int preset_id, const s
 
                         if (success || !import_result_vec.empty()) {
                             save_preset_mapping(preset_id, new_name);
+                            
+                            // Обновляем .info файл с метаданными FilamentHub
+                            // ВАЖНО: Это нужно делать ПОСЛЕ импорта, так как import_json_presets() создаёт .info файл с пустыми значениями
+                            // Мы скачиваем правильный .info файл из API и обновляем файл пресета
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP] Updating .info file with FilamentHub metadata...";
+                            update_preset_info_file(preset_id, new_name, access_token);
+                            
                             // ВАЖНО: НЕ вызываем load_current_presets() здесь, чтобы не перезагружать все пресеты после каждого импорта
                             // Это предотвращает обновление .info файлов не-FilamentHub пресетов
                             // load_current_presets() будет вызван один раз после завершения импорта всех пресетов
@@ -2615,12 +2827,46 @@ void FilamentHubPanel::process_preset_import_queue()
     
     // Если очередь пуста - завершаем синхронизацию
     if (should_finish) {
-        CallAfter([this]() {
+        // КРИТИЧНО: Получаем user_id из последней задачи (если была) для обновления last_sync_time
+        int user_id_for_sync = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
+            // Пытаемся получить user_id из последней задачи (если очередь не пуста)
+            // Если очередь пуста, загружаем user_id из токена
+            if (!m_preset_import_queue.empty()) {
+                user_id_for_sync = m_preset_import_queue.back().user_id;
+            }
+        }
+        
+        // Если не получили user_id из очереди, загружаем из токена
+        if (user_id_for_sync == 0) {
+            std::string dummy_token;
+            load_auth_token(dummy_token, user_id_for_sync);
+        }
+        
+        int final_user_id = user_id_for_sync; // Захватываем для lambda
+        
+        CallAfter([this, final_user_id]() {
             // ВАЖНО: Вызываем load_current_presets() только один раз после завершения импорта всех пресетов
             // Это обновит UI и предотвратит множественные перезагрузки всех пресетов (включая не-FilamentHub)
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] All presets imported. Calling load_current_presets() once...";
             wxGetApp().load_current_presets();
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] load_current_presets() completed.";
+            
+            // КРИТИЧНО: Обновляем last_sync_time ПОСЛЕ успешного импорта всех пресетов
+            // Это предотвращает потерю пресетов при прерывании синхронизации
+            if (final_user_id > 0) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] Updating last_sync_time after successful import...";
+                std::time_t now = std::time(nullptr);
+                std::stringstream ss;
+                ss << std::put_time(std::gmtime(&now), "%Y-%m-%dT%H:%M:%S.000000");
+                std::string current_time = ss.str();
+                save_last_sync_time(final_user_id, current_time);
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] Saved last_sync_time=" << current_time;
+            }
+            
+            // Сбрасываем флаг защиты от зацикливания после успешной синхронизации
+            m_full_sync_attempted = false;
             
             m_active_syncs--;
             m_is_syncing = false;
@@ -2646,6 +2892,12 @@ void FilamentHubPanel::process_preset_import_queue()
             // Обновляем количество непрочитанных уведомлений после завершения синхронизации
             // (так как после синхронизации могут появиться новые уведомления)
             update_unread_notifications_count();
+            
+            // Синхронизируем printer и print profiles (второстепенные, после основного - filament presets)
+            // Выполняем асинхронно, без блокировки UI
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Starting printer and print profiles sync after filament presets...";
+            synchronize_printer_profiles(false); // Incremental sync
+            synchronize_print_profiles(false); // Incremental sync
         });
         return;
     }
@@ -2805,14 +3057,14 @@ void FilamentHubPanel::update_user_info()
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Setting display name: " << display_name.ToUTF8();
                 m_user_name_label->SetLabel(display_name);
                 
-                // Get preset count via get_my_presets
+                // Get preset count via get_presets_stats (shows total presets, not just synced)
                 std::string access_token_inner;
                 int user_id_inner;
                 if (load_auth_token(access_token_inner, user_id_inner)) {
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Calling get_my_presets with token length: " << access_token_inner.length();
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Calling get_presets_stats with token length: " << access_token_inner.length();
                     
                     if (access_token_inner.empty()) {
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Access token is empty, cannot get presets count";
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Access token is empty, cannot get presets stats";
                         m_preset_count_label->SetLabel(_("Presets: ?"));
                         return;
                     }
@@ -2820,40 +3072,46 @@ void FilamentHubPanel::update_user_info()
                     FilamentHubClient client_inner;
                     client_inner.set_api_base_url(m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url);
                     
-                    client_inner.get_my_presets(
+                    client_inner.get_presets_stats(
                         access_token_inner,
-                        "",
                         [this](std::string json_body, unsigned http_status) {
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Received my presets. Status: " << http_status;
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Received presets stats. Status: " << http_status;
                             
                             // Проверяем статус ответа
                             if (http_status == 401) {
                                 // Токен истек - не обновляем UI, так как уже обработано в get_current_user
-                                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired (401) when getting presets count";
+                                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired (401) when getting presets stats";
                                 m_preset_count_label->SetLabel(_("Presets: ?"));
                                 return;
                             }
                             
                             if (http_status != 200) {
-                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets count. Status: " << http_status;
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets stats. Status: " << http_status;
                                 m_preset_count_label->SetLabel(_("Presets: ?"));
                                 return;
                             }
                             
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: My presets JSON: " << json_body;
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Presets stats JSON: " << json_body;
                             
                             try {
                                 nlohmann::json response = nlohmann::json::parse(json_body);
-                                int total = response.value("total", 0);
-                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Total presets: " << total;
-                                m_preset_count_label->SetLabel(wxString::Format(_("Presets: %d"), total));
+                                int total_presets = response.value("total_presets", 0);
+                                int synced_presets = response.value("synced_presets", 0);
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Total presets: " << total_presets << ", Synced: " << synced_presets;
+                                // Показываем общее количество и количество синхронизированных
+                                m_preset_count_label->SetLabel(wxString::Format(_("Presets: %d (%d synced)"), total_presets, synced_presets));
                             } catch (const std::exception& e) {
-                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing presets count: " << e.what();
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing presets stats: " << e.what();
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
+                                m_preset_count_label->SetLabel(_("Presets: ?"));
+                            } catch (...) {
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception when parsing presets stats";
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
                                 m_preset_count_label->SetLabel(_("Presets: ?"));
                             }
                         },
                         [this](std::string body, std::string error, unsigned http_status) {
-                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets count. Error: " << error 
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets stats. Error: " << error 
                                                       << ", Status: " << http_status;
                             
                             // Если токен истек, не показываем ошибку (уже обработано)
@@ -2867,8 +3125,27 @@ void FilamentHubPanel::update_user_info()
                 }
                 
             } catch (const std::exception& e) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info: " << e.what();
-                m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                // Логируем тело ответа для отладки (первые 500 символов)
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
+                CallAfter([this, user_id, e]() {
+                    m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+                    show_notification_in_webview(
+                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception when parsing user info JSON";
+                // Логируем тело ответа для отладки
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
+                CallAfter([this, user_id]() {
+                    m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+                    show_notification_in_webview(
+                        _L("Error parsing server response: Unknown exception"),
+                        "error"
+                    );
+                });
             }
         },
         // on_error: failed to get user info
@@ -2934,7 +3211,10 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         m_profile_button->Show();
         m_preset_count_label->Show();
         m_sync_button->Show(); // ВАЖНО: Показываем кнопку синхронизации
-        m_notifications_button->Show(); // Показываем кнопку уведомлений
+        // m_notifications_button removed - notifications are in WebView now
+        // if (m_notifications_button != nullptr) {
+        //     m_notifications_button->Show();
+        // }
         m_logout_button->Show();
         
         // Update unread notifications count
@@ -2954,8 +3234,13 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         m_profile_button->Hide();
         m_preset_count_label->Hide();
         m_sync_button->Hide(); // ВАЖНО: Скрываем кнопку синхронизации
-        m_notifications_button->Hide(); // Скрываем кнопку уведомлений
-        m_notifications_badge->Hide(); // Скрываем badge уведомлений
+        // m_notifications_button removed - notifications are in WebView now
+        // if (m_notifications_button != nullptr) {
+        //     m_notifications_button->Hide();
+        // }
+        // if (m_notifications_badge != nullptr) {
+        //     m_notifications_badge->Hide();
+        // }
         m_admin_button->Hide(); // Скрываем кнопку админки (если была показана)
         m_logout_button->Hide();
         
@@ -2965,7 +3250,7 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Hiding sync button (user is not logged in)";
         
         // Update labels
-        m_user_name_label->SetLabel(_("Not logged in"));
+        m_user_name_label->SetLabel(_("Sign in to unlock full functionality"));
         m_preset_count_label->SetLabel(_("Presets: 0"));
     }
     
@@ -3283,9 +3568,10 @@ void FilamentHubPanel::update_async_ui()
         m_refresh_button->Enable(!busy);
     }
 
-    if (m_notifications_button != nullptr) {
-        m_notifications_button->Enable(!busy);
-    }
+    // m_notifications_button removed - notifications are in WebView now
+    // if (m_notifications_button != nullptr) {
+    //     m_notifications_button->Enable(!busy);
+    // }
 
     if (m_admin_button != nullptr) {
         m_admin_button->Enable(!busy);
@@ -4218,15 +4504,14 @@ void FilamentHubPanel::update_unread_notifications_count()
     int user_id;
     
     if (!load_auth_token(access_token, user_id)) {
-        // User not logged in - hide badge
+        // User not logged in - send 0 count to WebView
         BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Cannot update notifications count - user not logged in";
         CallAfter([this]() {
             m_unread_notifications_count = 0;
-            if (m_notifications_button != nullptr) {
-                m_notifications_button->SetLabel(_("Notifications"));
-                if (m_info_panel) {
-                    m_info_panel->Layout();
-                }
+            // Вместо обновления C++ кнопки, отправляем сообщение в WebView
+            if (m_browser) {
+                wxString js_code = "window.postMessage({ command: 'update_notifications_count', count: 0 }, '*');";
+                WebView::RunScript(m_browser, js_code);
             }
         });
         return;
@@ -4236,11 +4521,10 @@ void FilamentHubPanel::update_unread_notifications_count()
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot update notifications count - access token is empty";
         CallAfter([this]() {
             m_unread_notifications_count = 0;
-            if (m_notifications_button != nullptr) {
-                m_notifications_button->SetLabel(_("Notifications"));
-                if (m_info_panel) {
-                    m_info_panel->Layout();
-                }
+            // Вместо обновления C++ кнопки, отправляем сообщение в WebView
+            if (m_browser) {
+                wxString js_code = "window.postMessage({ command: 'update_notifications_count', count: 0 }, '*');";
+                WebView::RunScript(m_browser, js_code);
             }
         });
         return;
@@ -4262,19 +4546,14 @@ void FilamentHubPanel::update_unread_notifications_count()
                     CallAfter([this, unread_count]() {
                         m_unread_notifications_count = unread_count;
                         
-                        // Обновляем текст кнопки: "Notifications" или "Notifications: X"
-                        if (m_notifications_button != nullptr) {
-                            wxString button_text;
-                            if (unread_count > 0) {
-                                button_text = wxString::Format(_("Notifications: %d"), unread_count);
-                            } else {
-                                button_text = _("Notifications");
-                            }
-                            m_notifications_button->SetLabel(button_text);
-                            
-                            if (m_info_panel) {
-                                m_info_panel->Layout();
-                            }
+                        // Вместо обновления C++ кнопки, отправляем сообщение в WebView
+                        if (m_browser) {
+                            wxString js_code = wxString::Format(
+                                "window.postMessage({ command: 'update_notifications_count', count: %d }, '*');",
+                                unread_count
+                            );
+                            WebView::RunScript(m_browser, js_code);
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sent update_notifications_count to WebView: " << unread_count;
                         }
                         
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unread notifications count updated: " << unread_count;
@@ -4363,7 +4642,18 @@ void FilamentHubPanel::show_notifications_dropdown()
 
 void FilamentHubPanel::export_filament_presets_to_filamenthub()
 {
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub() CALLED ==========";
+    // Счётчик вызовов для отладки
+    static int call_counter = 0;
+    call_counter++;
+    
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub() CALLED (call #" << call_counter << ") ==========";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false");
+    
+    // ВАЖНО: Проверяем, не идет ли уже экспорт (используем тот же флаг, что и для синхронизации)
+    if (m_is_syncing) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [EXPORT SKIP] Export already in progress (m_is_syncing=true), skipping duplicate call #" << call_counter;
+        return;
+    }
     
     // Проверяем авторизацию
     std::string access_token;
@@ -4445,9 +4735,21 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub()
                 export_filament_presets_to_filamenthub_internal(access_token, api_base_url);
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                // Логируем тело ответа для отладки (первые 500 символов)
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
                 CallAfter([this, e]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception when parsing user info JSON (filament presets export)";
+                // Логируем тело ответа для отладки
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
+                CallAfter([this]() {
+                    show_notification_in_webview(
+                        _L("Error parsing server response: Unknown exception"),
                         "error"
                     );
                 });
@@ -4457,7 +4759,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub()
         [this](std::string body, std::string error, unsigned http_status) {
             BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions. Error: " << error 
                                     << ", Status: " << http_status;
-            CallAfter([this, http_status]() {
+            CallAfter([this, http_status, error]() {
                 if (http_status == 401) {
                     show_notification_in_webview(
                         _L("Your session has expired. Please login again."),
@@ -4478,10 +4780,15 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub_internal() CALLED ==========";
     
+    // Устанавливаем флаг экспорта (используем тот же флаг, что и для синхронизации)
+    m_is_syncing = true;
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Set m_is_syncing=true for export";
+    
     // Проверяем PresetBundle
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export filament presets";
+        m_is_syncing = false; // Сбрасываем флаг при ошибке
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -4504,233 +4811,158 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
             continue;
         }
         
+        // ВАЖНО: В OrcaSlicer класс Preset не имеет поля "active"
+        // Все пользовательские пресеты (is_user() == true) считаются активными
+        // Черновики (active=false) - это понятие FilamentHub, а не OrcaSlicer
+        // Проверка active выполняется на бэкенде при импорте из OrcaSlicer
+        
         // Пропускаем пресеты с постфиксом [FilamentHub] (они уже синхронизированы)
         // Но можно экспортировать их тоже, если пользователь хочет обновить
         // Для MVP экспортируем все пользовательские пресеты
         
         try {
             // Получаем JSON конфигурацию пресета
-            nlohmann::json orcaslicer_json = preset.config.to_json();
+            nlohmann::json orcaslicer_json = get_config_json(preset.config);
+            
+            // НОВОЕ: Читаем .info файл для извлечения меток FilamentHub (приоритетный источник)
+            // .info файл более надежен чем JSON, так как OrcaSlicer не перезаписывает его при редактировании
+            std::string info_content;
+            if (!preset.file.empty() && boost::filesystem::exists(preset.file)) {
+                boost::filesystem::path info_file = preset.file;
+                info_file.replace_extension(".info");
+                
+                if (boost::filesystem::exists(info_file)) {
+                    try {
+                        std::ifstream ifs(info_file.string());
+                        if (ifs.is_open()) {
+                            std::stringstream buffer;
+                            buffer << ifs.rdbuf();
+                            info_content = buffer.str();
+                            ifs.close();
+                            
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Read .info file for preset: " 
+                                                     << preset.name << " (file: " << info_file.string() << ")";
+                        }
+                    } catch (const std::exception& e) {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to read .info file: " << e.what();
+                    }
+                }
+            }
+            
+            // Читаем оригинальный JSON файл для извлечения метаданных FilamentHub (fallback)
+            // Это необходимо, так как get_config_json() извлекает только известные опции,
+            // а наши метки fhub_id, fhub_source, fhub_draft_id не сохраняются в preset.config
+            if (!preset.file.empty() && boost::filesystem::exists(preset.file)) {
+                try {
+                    nlohmann::json original_json;
+                    boost::filesystem::ifstream ifs(preset.file);
+                    if (ifs.is_open()) {
+                        ifs >> original_json;
+                        ifs.close();
+                        
+                        // Извлекаем метки FilamentHub из оригинального JSON
+                        if (original_json.contains("fhub_id")) {
+                            orcaslicer_json["fhub_id"] = original_json["fhub_id"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for filament preset: " 
+                                                     << preset.name << " -> fhub_id=" << original_json["fhub_id"].get<int>();
+                        }
+                        if (original_json.contains("fhub_source")) {
+                            orcaslicer_json["fhub_source"] = original_json["fhub_source"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_source from JSON file for filament preset: " 
+                                                     << preset.name << " -> fhub_source=" << original_json["fhub_source"].get<std::string>();
+                        }
+                        if (original_json.contains("fhub_draft_id")) {
+                            orcaslicer_json["fhub_draft_id"] = original_json["fhub_draft_id"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_draft_id from JSON file for filament preset: " 
+                                                     << preset.name << " -> fhub_draft_id=" << original_json["fhub_draft_id"].get<std::string>();
+                        }
+                        
+                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Successfully read metadata from JSON file for filament preset: " 
+                                                 << preset.name << " (file: " << preset.file << ")";
+                    } else {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to open JSON file for filament preset: " 
+                                                    << preset.name << " (file: " << preset.file << ")";
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to read original JSON file for filament preset " 
+                                                << preset.name << " metadata: " << e.what() << " (file: " << preset.file << ")";
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No JSON file available for filament preset: " 
+                                         << preset.name << " (file empty or not exists)";
+            }
             
             // Создаем JSON для Backend
             nlohmann::json preset_data;
+            
+            // Добавляем info_content в preset_data (для отправки на Backend)
+            if (!info_content.empty()) {
+                preset_data["info_content"] = info_content;
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Added .info file content to payload for preset: " << preset.name;
+            }
             
             // Базовые поля
             preset_data["external_id"] = preset.setting_id; // Уникальный ID в OrcaSlicer
             preset_data["name"] = preset.name;
             
-            // Проверяем маппинг (если пресет уже синхронизирован, добавляем fhub_id)
-            // Маппинг хранится как external_id → fhub_id (для экспорта)
-            // Для импорта используется preset_id → bundle_preset_name
-            std::string mapping_key = CONFIG_KEY_PRESET_MAPPING + "_" + preset.setting_id;
-            std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
-            if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+            // Проверяем метки из orcaslicer_json (приоритет над маппингом из AppConfig)
+            bool has_fhub_id_from_json = false;
+            if (orcaslicer_json.contains("fhub_id") && orcaslicer_json.contains("fhub_source")) {
                 try {
-                    int fhub_id = std::stoi(fhub_id_str);
-                    preset_data["fhub_id"] = fhub_id;
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for preset external_id=" << preset.setting_id 
-                                           << " -> fhub_id=" << fhub_id;
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
-                }
-            } else {
-                // Пробуем найти маппинг по bundle_preset_name (для импортированных пресетов)
-                // Ищем все маппинги preset_id → bundle_preset_name и проверяем, совпадает ли bundle_preset_name
-                // Это более сложная логика, но нужна для обратной синхронизации
-                // Для MVP можно пропустить эту проверку и всегда отправлять без fhub_id
-                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for preset external_id=" << preset.setting_id 
-                                        << ", will be created as new draft";
-            }
-            
-            // OrcaSlicer JSON формат (полный JSON профиль)
-            preset_data["orcaslicer_settings"] = orcaslicer_json;
-            
-            // Извлекаем базовые параметры для Filament
-            // nozzle_temperature - это массив строк, берем первое значение
-            if (orcaslicer_json.contains("nozzle_temperature")) {
-                try {
-                    if (orcaslicer_json["nozzle_temperature"].is_array()) {
-                        auto temps = orcaslicer_json["nozzle_temperature"].get<std::vector<std::string>>();
-                        if (!temps.empty()) {
-                            preset_data["extruder_temp"] = std::stoi(temps[0]);
-                        }
-                    } else if (orcaslicer_json["nozzle_temperature"].is_string()) {
-                        std::string temp_str = orcaslicer_json["nozzle_temperature"].get<std::string>();
-                        preset_data["extruder_temp"] = std::stoi(temp_str);
-                    } else if (orcaslicer_json["nozzle_temperature"].is_number()) {
-                        preset_data["extruder_temp"] = orcaslicer_json["nozzle_temperature"].get<double>();
+                    int fhub_id = orcaslicer_json["fhub_id"].get<int>();
+                    std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
+                    if (fhub_source == "filamenthub" && fhub_id > 0) {
+                        preset_data["fhub_id"] = fhub_id;
+                        has_fhub_id_from_json = true;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for filament preset: " 
+                                               << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
                     }
                 } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse nozzle_temperature: " << e.what();
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from JSON metadata: " << e.what();
                 }
             }
             
-            // bed_temperature - это массив строк, берем первое значение
-            if (orcaslicer_json.contains("bed_temperature")) {
-                try {
-                    if (orcaslicer_json["bed_temperature"].is_array()) {
-                        auto temps = orcaslicer_json["bed_temperature"].get<std::vector<std::string>>();
-                        if (!temps.empty()) {
-                            preset_data["bed_temp"] = std::stoi(temps[0]);
-                        }
-                    } else if (orcaslicer_json["bed_temperature"].is_string()) {
-                        std::string temp_str = orcaslicer_json["bed_temperature"].get<std::string>();
-                        preset_data["bed_temp"] = std::stoi(temp_str);
-                    } else if (orcaslicer_json["bed_temperature"].is_number()) {
-                        preset_data["bed_temp"] = orcaslicer_json["bed_temperature"].get<double>();
+            // Проверяем маппинг из AppConfig (fallback, если нет меток в JSON)
+            if (!has_fhub_id_from_json) {
+                std::string mapping_key = CONFIG_KEY_PRESET_MAPPING + "_" + preset.setting_id;
+                std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
+                if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+                    try {
+                        int fhub_id = std::stoi(fhub_id_str);
+                        preset_data["fhub_id"] = fhub_id;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for preset external_id=" << preset.setting_id 
+                                               << " -> fhub_id=" << fhub_id;
+                    } catch (const std::exception& e) {
+                        (void)e; // Подавляем предупреждение о неиспользованной переменной
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
                     }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse bed_temperature: " << e.what();
-                }
-            }
-            
-            // Определяем material_type из inherits
-            // Например: "Generic PLA @System" -> "PLA"
-            if (orcaslicer_json.contains("inherits")) {
-                std::string inherits = orcaslicer_json["inherits"].get<std::string>();
-                
-                // Извлекаем базовый тип материала из inherits
-                // "Generic PLA @System" -> "PLA"
-                // "Generic PETG @System" -> "PETG"
-                std::string material_type = "";
-                if (inherits.find("PLA") != std::string::npos) {
-                    material_type = "PLA";
-                } else if (inherits.find("PETG") != std::string::npos || inherits.find("PET") != std::string::npos) {
-                    material_type = "PETG";
-                } else if (inherits.find("ABS") != std::string::npos) {
-                    material_type = "ABS";
-                } else if (inherits.find("TPU") != std::string::npos) {
-                    material_type = "TPU";
-                } else if (inherits.find("ASA") != std::string::npos) {
-                    material_type = "ASA";
-                } else if (inherits.find("PC") != std::string::npos) {
-                    material_type = "PC";
-                } else if (inherits.find("PA") != std::string::npos || inherits.find("Nylon") != std::string::npos) {
-                    material_type = "PA";
-                } else if (inherits.find("PVA") != std::string::npos) {
-                    material_type = "PVA";
                 } else {
-                    // По умолчанию используем PLA
-                    material_type = "PLA";
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Unknown material type from inherits: " << inherits 
-                                              << ", using PLA as default";
+                    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for preset external_id=" << preset.setting_id 
+                                            << ", will be created as new draft";
                 }
-                
-                preset_data["material_type"] = material_type;
-            } else {
-                // Если inherits нет, используем PLA по умолчанию
-                preset_data["material_type"] = "PLA";
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: No inherits field in preset " << preset.name 
-                                          << ", using PLA as default";
             }
+            
+            // Пропускаем пресеты без маппинга (не синхронизированные)
+            // ВАЖНО: Экспортируем только пресеты, которые имеют fhub_id (синхронизированы с FilamentHub)
+            // Это предотвращает экспорт всех пользовательских пресетов
+            if (!preset_data.contains("fhub_id")) {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping preset " << preset.name
+                                        << " (external_id=" << preset.setting_id
+                                        << ") - no mapping found, not synced with FilamentHub";
+                continue; // Пропускаем этот пресет
+            }
+            
+            // ВАЖНО: Проверяем sync_enabled через API перед экспортом
+            // Если sync_enabled=False, пресет не должен экспортироваться
+            // Это предотвращает экспорт пресетов, у которых пользователь отключил синхронизацию
+            // Проверка будет выполнена на бэкенде при получении экспорта
+            
+            // Отправляем весь JSON в бэкенд - там вся обработка
+            // В C++ только читаем JSON файл и отправляем как есть
+            preset_data["orcaslicer_settings"] = orcaslicer_json;
             
             // Имя филамента (используем имя пресета)
             preset_data["filament_name"] = preset.name;
-            
-            // Дополнительные параметры (опционально)
-            if (orcaslicer_json.contains("print_speed")) {
-                try {
-                    if (orcaslicer_json["print_speed"].is_string()) {
-                        std::string speed_str = orcaslicer_json["print_speed"].get<std::string>();
-                        preset_data["print_speed"] = std::stof(speed_str);
-                    } else if (orcaslicer_json["print_speed"].is_number()) {
-                        preset_data["print_speed"] = orcaslicer_json["print_speed"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse print_speed: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("travel_speed")) {
-                try {
-                    if (orcaslicer_json["travel_speed"].is_string()) {
-                        std::string speed_str = orcaslicer_json["travel_speed"].get<std::string>();
-                        preset_data["travel_speed"] = std::stof(speed_str);
-                    } else if (orcaslicer_json["travel_speed"].is_number()) {
-                        preset_data["travel_speed"] = orcaslicer_json["travel_speed"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse travel_speed: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("layer_height")) {
-                try {
-                    if (orcaslicer_json["layer_height"].is_string()) {
-                        std::string height_str = orcaslicer_json["layer_height"].get<std::string>();
-                        preset_data["layer_height"] = std::stof(height_str);
-                    } else if (orcaslicer_json["layer_height"].is_number()) {
-                        preset_data["layer_height"] = orcaslicer_json["layer_height"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse layer_height: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("first_layer_height")) {
-                try {
-                    if (orcaslicer_json["first_layer_height"].is_string()) {
-                        std::string height_str = orcaslicer_json["first_layer_height"].get<std::string>();
-                        preset_data["first_layer_height"] = std::stof(height_str);
-                    } else if (orcaslicer_json["first_layer_height"].is_number()) {
-                        preset_data["first_layer_height"] = orcaslicer_json["first_layer_height"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse first_layer_height: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("flow_rate")) {
-                try {
-                    if (orcaslicer_json["flow_rate"].is_string()) {
-                        std::string rate_str = orcaslicer_json["flow_rate"].get<std::string>();
-                        preset_data["flow_rate"] = std::stof(rate_str);
-                    } else if (orcaslicer_json["flow_rate"].is_number()) {
-                        preset_data["flow_rate"] = orcaslicer_json["flow_rate"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse flow_rate: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("fan_speed")) {
-                try {
-                    if (orcaslicer_json["fan_speed"].is_string()) {
-                        std::string speed_str = orcaslicer_json["fan_speed"].get<std::string>();
-                        preset_data["fan_speed"] = std::stoi(speed_str);
-                    } else if (orcaslicer_json["fan_speed"].is_number()) {
-                        preset_data["fan_speed"] = orcaslicer_json["fan_speed"].get<int>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fan_speed: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("retraction_length")) {
-                try {
-                    if (orcaslicer_json["retraction_length"].is_string()) {
-                        std::string length_str = orcaslicer_json["retraction_length"].get<std::string>();
-                        preset_data["retraction_length"] = std::stof(length_str);
-                    } else if (orcaslicer_json["retraction_length"].is_number()) {
-                        preset_data["retraction_length"] = orcaslicer_json["retraction_length"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse retraction_length: " << e.what();
-                }
-            }
-            
-            if (orcaslicer_json.contains("retraction_speed")) {
-                try {
-                    if (orcaslicer_json["retraction_speed"].is_string()) {
-                        std::string speed_str = orcaslicer_json["retraction_speed"].get<std::string>();
-                        preset_data["retraction_speed"] = std::stof(speed_str);
-                    } else if (orcaslicer_json["retraction_speed"].is_number()) {
-                        preset_data["retraction_speed"] = orcaslicer_json["retraction_speed"].get<double>();
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse retraction_speed: " << e.what();
-                }
-            }
             
             // Метаданные
             preset_data["source"] = "orcaslicer";
@@ -4835,7 +5067,17 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                 for (const auto& result : response["results"]) {
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
-                    int fhub_id = result.value("fhub_id", 0);
+                    
+                    // Безопасно извлекаем fhub_id (может быть null)
+                    int fhub_id = 0;
+                    if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
+                        try {
+                            fhub_id = result["fhub_id"].get<int>();
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id: " << e.what();
+                            fhub_id = 0;
+                        }
+                    }
                     
                     if (status == "created") {
                         created_count++;
@@ -4867,6 +5109,11 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                 
                 // Показываем уведомление пользователю
                 CallAfter([this, success_count, error_count, created_count, updated_count]() {
+                    static int notification_counter = 0;
+                    notification_counter++;
+                    
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Showing export result notification";
+                    
                     wxString message;
                     if (error_count == 0) {
                         if (created_count > 0 && updated_count > 0) {
@@ -4879,12 +5126,17 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         } else {
                             message = _L("Filament presets exported successfully.");
                         }
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Calling show_notification_in_webview() with success message";
                         show_notification_in_webview(message, "success");
                     } else {
                         message = wxString::Format(_L("Exported %d filament presets: %d successful, %d errors."), 
                                                   success_count + error_count, success_count, error_count);
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Calling show_notification_in_webview() with warning message";
                         show_notification_in_webview(message, "warning");
                     }
+                    // Сбрасываем флаг после завершения экспорта
+                    m_is_syncing = false;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] Reset m_is_syncing=false after notification #" << notification_counter;
                 });
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what() 
@@ -4894,6 +5146,9 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
                         "error"
                     );
+                    // Сбрасываем флаг после ошибки парсинга
+                    m_is_syncing = false;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export parse error";
                 });
             }
         },
@@ -4920,6 +5175,9 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                     error_msg,
                     http_status == 401 || http_status == 403 ? "warning" : "error"
                 );
+                // Сбрасываем флаг после ошибки экспорта
+                m_is_syncing = false;
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export error";
             });
         }
     );
@@ -5012,9 +5270,21 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
                 export_printer_profiles_to_filamenthub_internal(access_token, api_base_url);
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                // Логируем тело ответа для отладки (первые 500 символов)
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
                 CallAfter([this, e]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception when parsing user info JSON (printer profiles export)";
+                // Логируем тело ответа для отладки
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
+                CallAfter([this]() {
+                    show_notification_in_webview(
+                        _L("Error parsing server response: Unknown exception"),
                         "error"
                     );
                 });
@@ -5024,7 +5294,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
         [this](std::string body, std::string error, unsigned http_status) {
             BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions. Error: " << error 
                                     << ", Status: " << http_status;
-            CallAfter([this, http_status]() {
+            CallAfter([this, http_status, error]() {
                 if (http_status == 401) {
                     show_notification_in_webview(
                         _L("Your session has expired. Please login again."),
@@ -5073,7 +5343,45 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
         
         try {
             // Получаем JSON конфигурацию пресета
-            nlohmann::json orcaslicer_json = preset.config.to_json();
+            nlohmann::json orcaslicer_json = get_config_json(preset.config);
+            
+            // Читаем оригинальный JSON файл для извлечения метаданных FilamentHub
+            // Это необходимо, так как get_config_json() извлекает только известные опции,
+            // а наши метки fhub_id, fhub_source не сохраняются в preset.config
+            if (!preset.file.empty() && boost::filesystem::exists(preset.file)) {
+                try {
+                    nlohmann::json original_json;
+                    boost::filesystem::ifstream ifs(preset.file);
+                    if (ifs.is_open()) {
+                        ifs >> original_json;
+                        ifs.close();
+                        
+                        // Извлекаем метки FilamentHub из оригинального JSON
+                        if (original_json.contains("fhub_id")) {
+                            orcaslicer_json["fhub_id"] = original_json["fhub_id"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for printer profile: " 
+                                                     << preset.name << " -> fhub_id=" << original_json["fhub_id"].get<int>();
+                        }
+                        if (original_json.contains("fhub_source")) {
+                            orcaslicer_json["fhub_source"] = original_json["fhub_source"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_source from JSON file for printer profile: " 
+                                                     << preset.name << " -> fhub_source=" << original_json["fhub_source"].get<std::string>();
+                        }
+                        
+                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Successfully read metadata from JSON file for printer profile: " 
+                                                 << preset.name << " (file: " << preset.file << ")";
+                    } else {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to open JSON file for printer profile: " 
+                                                    << preset.name << " (file: " << preset.file << ")";
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to read original JSON file for printer profile " 
+                                                << preset.name << " metadata: " << e.what() << " (file: " << preset.file << ")";
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No JSON file available for printer profile: " 
+                                         << preset.name << " (file empty or not exists)";
+            }
             
             // Создаем JSON для Backend
             nlohmann::json profile_data;
@@ -5083,30 +5391,99 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
             profile_data["name"] = preset.name;
             profile_data["setting_id"] = preset.setting_id;
             
-            // Проверяем маппинг (если профиль уже синхронизирован, добавляем fhub_id)
-            std::string mapping_key = CONFIG_KEY_PRINTER_PROFILE_MAPPING + "_" + preset.setting_id;
-            std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
-            if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+            // Проверяем метки из orcaslicer_json (приоритет над маппингом из AppConfig)
+            bool has_fhub_id_from_json = false;
+            if (orcaslicer_json.contains("fhub_id") && orcaslicer_json.contains("fhub_source")) {
                 try {
-                    int fhub_id = std::stoi(fhub_id_str);
-                    profile_data["fhub_id"] = fhub_id;
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for printer profile external_id=" << preset.setting_id 
-                                           << " -> fhub_id=" << fhub_id;
+                    int fhub_id = orcaslicer_json["fhub_id"].get<int>();
+                    std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
+                    if (fhub_source == "filamenthub" && fhub_id > 0) {
+                        profile_data["fhub_id"] = fhub_id;
+                        has_fhub_id_from_json = true;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for printer profile: " 
+                                               << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
+                    }
                 } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from JSON metadata: " << e.what();
                 }
-            } else {
-                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for printer profile external_id=" << preset.setting_id 
-                                        << ", will be created as new draft";
+            }
+            
+            // Проверяем маппинг из AppConfig (fallback, если нет меток в JSON)
+            if (!has_fhub_id_from_json) {
+                std::string mapping_key = CONFIG_KEY_PRINTER_PROFILE_MAPPING + "_" + preset.setting_id;
+                std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
+                if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+                    try {
+                        int fhub_id = std::stoi(fhub_id_str);
+                        profile_data["fhub_id"] = fhub_id;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for printer profile external_id=" << preset.setting_id 
+                                               << " -> fhub_id=" << fhub_id;
+                    } catch (const std::exception& e) {
+                        (void)e; // Подавляем предупреждение о неиспользованной переменной
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                    }
+                } else {
+                    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for printer profile external_id=" << preset.setting_id 
+                                            << ", will be created as new draft";
+                }
             }
             
             // OrcaSlicer JSON формат (полный JSON профиль)
             profile_data["orcaslicer_settings"] = orcaslicer_json;
             
+            // ВАЖНО: Добавляем метаданные для правильного сопоставления принтера
+            // Извлекаем vendor и model из orcaslicer_json
+            if (orcaslicer_json.contains("printer_model") && !orcaslicer_json["printer_model"].is_null()) {
+                profile_data["printer_model"] = orcaslicer_json["printer_model"];
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [PRINTER] printer_model=" << orcaslicer_json["printer_model"].dump();
+            }
+            if (orcaslicer_json.contains("printer_vendor") && !orcaslicer_json["printer_vendor"].is_null()) {
+                profile_data["profile_vendor"] = orcaslicer_json["printer_vendor"];
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [PRINTER] vendor=" << orcaslicer_json["printer_vendor"].dump();
+            }
+            if (orcaslicer_json.contains("inherits") && !orcaslicer_json["inherits"].is_null()) {
+                profile_data["inherits"] = orcaslicer_json["inherits"];
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [PRINTER] inherits=" << orcaslicer_json["inherits"].dump();
+            }
+            
+            // Логируем важные поля для отладки сопоставления принтеров
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [PRINTER EXPORT] " 
+                                   << "name='" << preset.name << "'"
+                                   << ", printer_model=" << (orcaslicer_json.contains("printer_model") ? orcaslicer_json["printer_model"].dump() : "null")
+                                   << ", vendor=" << (orcaslicer_json.contains("printer_vendor") ? orcaslicer_json["printer_vendor"].dump() : "null");
+            
             // Извлекаем базовые параметры для PrinterProfile
-            // vendor (из preset.vendor)
-            if (!preset.vendor.empty()) {
-                profile_data["vendor"] = preset.vendor;
+            // vendor (из preset.vendor или из orcaslicer_json)
+            if (orcaslicer_json.contains("printer_vendor") && orcaslicer_json["printer_vendor"].is_string()) {
+                profile_data["vendor"] = orcaslicer_json["printer_vendor"].get<std::string>();
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [PRINTER EXPORT] vendor from printer_vendor: " << orcaslicer_json["printer_vendor"].get<std::string>();
+            } else if (preset.vendor != nullptr && !preset.vendor->id.empty()) {
+                profile_data["vendor"] = preset.vendor->id;
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [PRINTER EXPORT] vendor from preset.vendor: " << preset.vendor->id;
+            }
+            
+            // printer_model (из orcaslicer_json) - КРИТИЧНО для сопоставления с базой
+            if (orcaslicer_json.contains("printer_model") && orcaslicer_json["printer_model"].is_string()) {
+                std::string printer_model = orcaslicer_json["printer_model"].get<std::string>();
+                if (!printer_model.empty()) {
+                    profile_data["orcaslicer_settings"]["printer_model"] = printer_model;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [PRINTER EXPORT] printer_model: " << printer_model;
+                }
+            }
+            
+            // Извлекаем manufacturer и model из printer_model если есть
+            // Формат в OrcaSlicer: "manufacturer model" или просто "model"
+            if (orcaslicer_json.contains("printer_model") && orcaslicer_json["printer_model"].is_string()) {
+                std::string printer_model = orcaslicer_json["printer_model"].get<std::string>();
+                // Парсим: первое слово - manufacturer, остальное - model
+                size_t first_space = printer_model.find(' ');
+                if (first_space != std::string::npos) {
+                    std::string manufacturer = printer_model.substr(0, first_space);
+                    std::string model = printer_model.substr(first_space + 1);
+                    profile_data["orcaslicer_settings"]["manufacturer"] = manufacturer;
+                    profile_data["orcaslicer_settings"]["model"] = model;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [PRINTER EXPORT] Extracted manufacturer='" << manufacturer << "', model='" << model << "'";
+                }
             }
             
             // description (из preset.description)
@@ -5131,6 +5508,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                             try {
                                 nozzle_diameters.push_back(std::stof(nozzle_str));
                             } catch (const std::exception& e) {
+                                (void)e; // Подавляем предупреждение о неиспользованной переменной
                                 BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse nozzle_diameter: " << nozzle_str;
                             }
                         }
@@ -5159,6 +5537,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                         try {
                             profile_data["printable_area"] = nlohmann::json::parse(area_str);
                         } catch (const std::exception& e) {
+                            (void)e; // Подавляем предупреждение о неиспользованной переменной
                             BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse printable_area as JSON: " << area_str;
                         }
                     }
@@ -5307,7 +5686,17 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                 for (const auto& result : response["results"]) {
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
-                    int fhub_id = result.value("fhub_id", 0);
+                    
+                    // Безопасно извлекаем fhub_id (может быть null)
+                    int fhub_id = 0;
+                    if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
+                        try {
+                            fhub_id = result["fhub_id"].get<int>();
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id: " << e.what();
+                            fhub_id = 0;
+                        }
+                    }
                     
                     if (status == "created") {
                         created_count++;
@@ -5482,9 +5871,21 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub()
                 export_print_profiles_to_filamenthub_internal(access_token, api_base_url);
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
+                // Логируем тело ответа для отладки (первые 500 символов)
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
                 CallAfter([this, e]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
+                        "error"
+                    );
+                });
+            } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception when parsing user info JSON (printer profiles export)";
+                // Логируем тело ответа для отладки
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
+                CallAfter([this]() {
+                    show_notification_in_webview(
+                        _L("Error parsing server response: Unknown exception"),
                         "error"
                     );
                 });
@@ -5494,7 +5895,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub()
         [this](std::string body, std::string error, unsigned http_status) {
             BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions. Error: " << error 
                                     << ", Status: " << http_status;
-            CallAfter([this, http_status]() {
+            CallAfter([this, http_status, error]() {
                 if (http_status == 401) {
                     show_notification_in_webview(
                         _L("Your session has expired. Please login again."),
@@ -5544,7 +5945,45 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
         
         try {
             // Получаем JSON конфигурацию пресета
-            nlohmann::json orcaslicer_json = preset.config.to_json();
+            nlohmann::json orcaslicer_json = get_config_json(preset.config);
+            
+            // Читаем оригинальный JSON файл для извлечения метаданных FilamentHub
+            // Это необходимо, так как get_config_json() извлекает только известные опции,
+            // а наши метки fhub_id, fhub_source не сохраняются в preset.config
+            if (!preset.file.empty() && boost::filesystem::exists(preset.file)) {
+                try {
+                    nlohmann::json original_json;
+                    boost::filesystem::ifstream ifs(preset.file);
+                    if (ifs.is_open()) {
+                        ifs >> original_json;
+                        ifs.close();
+                        
+                        // Извлекаем метки FilamentHub из оригинального JSON
+                        if (original_json.contains("fhub_id")) {
+                            orcaslicer_json["fhub_id"] = original_json["fhub_id"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for print profile: " 
+                                                     << preset.name << " -> fhub_id=" << original_json["fhub_id"].get<int>();
+                        }
+                        if (original_json.contains("fhub_source")) {
+                            orcaslicer_json["fhub_source"] = original_json["fhub_source"];
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_source from JSON file for print profile: " 
+                                                     << preset.name << " -> fhub_source=" << original_json["fhub_source"].get<std::string>();
+                        }
+                        
+                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Successfully read metadata from JSON file for print profile: " 
+                                                 << preset.name << " (file: " << preset.file << ")";
+                    } else {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to open JSON file for print profile: " 
+                                                    << preset.name << " (file: " << preset.file << ")";
+                    }
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to read original JSON file for print profile " 
+                                                << preset.name << " metadata: " << e.what() << " (file: " << preset.file << ")";
+                }
+            } else {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No JSON file available for print profile: " 
+                                         << preset.name << " (file empty or not exists)";
+            }
             
             // Создаем JSON для Backend
             nlohmann::json profile_data;
@@ -5554,21 +5993,41 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
             profile_data["name"] = preset.name;
             profile_data["setting_id"] = preset.setting_id;
             
-            // Проверяем маппинг (если профиль уже синхронизирован, добавляем fhub_id)
-            std::string mapping_key = CONFIG_KEY_PRINT_PROFILE_MAPPING + "_" + preset.setting_id;
-            std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
-            if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+            // Проверяем метки из orcaslicer_json (приоритет над маппингом из AppConfig)
+            bool has_fhub_id_from_json = false;
+            if (orcaslicer_json.contains("fhub_id") && orcaslicer_json.contains("fhub_source")) {
                 try {
-                    int fhub_id = std::stoi(fhub_id_str);
-                    profile_data["fhub_id"] = fhub_id;
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for print profile external_id=" << preset.setting_id 
-                                           << " -> fhub_id=" << fhub_id;
+                    int fhub_id = orcaslicer_json["fhub_id"].get<int>();
+                    std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
+                    if (fhub_source == "filamenthub" && fhub_id > 0) {
+                        profile_data["fhub_id"] = fhub_id;
+                        has_fhub_id_from_json = true;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for print profile: " 
+                                               << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
+                    }
                 } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from JSON metadata: " << e.what();
                 }
-            } else {
-                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for print profile external_id=" << preset.setting_id 
-                                        << ", will be created as new draft";
+            }
+            
+            // Проверяем маппинг из AppConfig (fallback, если нет меток в JSON)
+            if (!has_fhub_id_from_json) {
+                std::string mapping_key = CONFIG_KEY_PRINT_PROFILE_MAPPING + "_" + preset.setting_id;
+                std::string fhub_id_str = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, mapping_key);
+                if (!fhub_id_str.empty() && fhub_id_str != "true" && fhub_id_str != "True" && fhub_id_str != "TRUE") {
+                    try {
+                        int fhub_id = std::stoi(fhub_id_str);
+                        profile_data["fhub_id"] = fhub_id;
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found mapping for print profile external_id=" << preset.setting_id 
+                                               << " -> fhub_id=" << fhub_id;
+                    } catch (const std::exception& e) {
+                        (void)e; // Подавляем предупреждение о неиспользованной переменной
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from mapping: " << fhub_id_str;
+                    }
+                } else {
+                    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: No mapping found for print profile external_id=" << preset.setting_id 
+                                            << ", will be created as new draft";
+                }
             }
             
             // OrcaSlicer JSON формат (полный JSON профиль)
@@ -5576,8 +6035,8 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
             
             // Извлекаем базовые параметры для PrintProfile
             // vendor (из preset.vendor)
-            if (!preset.vendor.empty()) {
-                profile_data["vendor"] = preset.vendor;
+            if (preset.vendor != nullptr && !preset.vendor->id.empty()) {
+                profile_data["vendor"] = preset.vendor->id;
             }
             
             // description (из preset.description)
@@ -5788,7 +6247,17 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                 for (const auto& result : response["results"]) {
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
-                    int fhub_id = result.value("fhub_id", 0);
+                    
+                    // Безопасно извлекаем fhub_id (может быть null)
+                    int fhub_id = 0;
+                    if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
+                        try {
+                            fhub_id = result["fhub_id"].get<int>();
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id: " << e.what();
+                            fhub_id = 0;
+                        }
+                    }
                     
                     if (status == "created") {
                         created_count++;

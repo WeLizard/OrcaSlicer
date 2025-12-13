@@ -1,0 +1,29 @@
+[warning]	2025-11-17 19:35:37.864379[Thread 0x0000553c]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_model_id_from_desgin_id
+[warning]	2025-11-17 19:35:37.865376[Thread 0x0000553c]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_profile_3mf
+[error]	2025-11-17 19:35:44.266554[Thread 0x0000553c]:Slic3r::GUI::PartPlate::calc_exclude_triangles:Unable to create exclude triangles
+[error]	2025-11-17 19:35:44.272555[Thread 0x0000553c]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg
+[error]	2025-11-17 19:35:44.290566[Thread 0x00006f5c]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi\Lhand.stl
+[error]	2025-11-17 19:35:44.290566[Thread 0x00004c50]:Unable to open the fileC:\Users\Lizard\Desktop\123titled.stl
+[error]	2025-11-17 19:35:44.290566[Thread 0x00001f9c]:Unable to open the fileC:\Users\Lizard\Downloads\winchrack\WinchRack_custom\Нью печать\Красный ролик ведущий.3mf
+[error]	2025-11-17 19:35:44.290566[Thread 0x00005754]:Unable to open the fileC:\Users\Lizard\Downloads\Case.3mf
+[error]	2025-11-17 19:35:44.290566[Thread 0x00004a00]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi\Miyabi.3mf
+[error]	2025-11-17 19:35:44.290566[Thread 0x000060a4]:Unable to open the fileF:\Ilya\VENOM\venomNewbot.stl
+[error]	2025-11-17 19:35:44.290566[Thread 0x00004eec]:Unable to open the fileC:\Users\Lizard\Downloads\Pico4洞洞板支架_stls\PICO手柄支架.3mf
+[error]	2025-11-17 19:35:44.290566[Thread 0x000058f4]:Unable to open the fileC:\Users\Lizard\Downloads\Trashbag Holder - 6043568\Trashbag_Holder.stl
+[error]	2025-11-17 19:35:44.290566[Thread 0x00003b70]:Unable to open the fileC:\Users\Lizard\Downloads\Профиль.3mf
+[error]	2025-11-17 19:35:44.290566[Thread 0x00000774]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi.3mf
+[error]	2025-11-17 19:35:44.290566[Thread 0x00006da0]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi.stl
+[error]	2025-11-17 19:35:44.290566[Thread 0x00006818]:Unable to open the fileC:\Users\Lizard\Downloads\untitled.stl
+[error]	2025-11-17 19:35:44.290566[Thread 0x00006da0]:Unable to open the fileC:\Users\Lizard\Desktop\geek.stl
+[error]	2025-11-17 19:35:44.291128[Thread 0x00004eec]:Unable to open the fileC:\Users\Lizard\Desktop\2124124v.STL
+[error]	2025-11-17 19:35:44.512308[Thread 0x0000553c]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg
+[error]	2025-11-17 19:35:46.831265[Thread 0x0000553c]:Slic3r::GUI::PartPlate::calc_exclude_triangles:Unable to create exclude triangles
+[error]	2025-11-17 19:35:46.894639[Thread 0x0000553c]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg
+[error]	2025-11-17 19:35:48.193563[Thread 0x00004afc]:[install_plugin]: 1385, got 7 files
+[warning]	2025-11-17 19:35:48.662490[Thread 0x0000553c]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_model_id_from_desgin_id
+[warning]	2025-11-17 19:35:48.662490[Thread 0x0000553c]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_profile_3mf
+[error]	2025-11-17 19:35:48.766911[Thread 0x0000553c]:can not find parent for config C:\Users\Lizard\AppData\Roaming\OrcaSlicer\user\2136879404\process\0.20mm Standard @Creality Ender3V2 - Копировать.json!
+[error]	2025-11-17 19:35:50.117969[Thread 0x0000553c]:Slic3r::NetworkAgent::connect_server error: network_agent=00000223FF89CEB0, ret=-2
+[warning]	2025-11-17 19:35:50.688568[Thread 0x000069c8]:[Orca Updater]: online version=1.10.1.9, current_version=1.10.1.9, no need to download
+[error]	2025-11-17 19:36:02.495772[Thread 0x0000553c]:Slic3r::GUI::PartPlate::calc_exclude_triangles:Unable to create exclude triangles
+[error]	2025-11-17 19:36:02.559333[Thread 0x0000553c]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg

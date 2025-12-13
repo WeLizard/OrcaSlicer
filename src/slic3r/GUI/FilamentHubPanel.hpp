@@ -400,6 +400,21 @@ private:
     bool import_preset_silent(int preset_id, const std::string& preset_name, const std::string& access_token);
 
     /**
+     * \brief Update preset .info file with FilamentHub metadata
+     * 
+     * After importing a preset via import_json_presets(), OrcaSlicer creates a .info file with empty values.
+     * This method downloads the correct .info file from FilamentHub API and updates the preset file.
+     * 
+     * IMPORTANT: We don't use fields sync_info, user_id, setting_id, base_id, updated_time from Preset object,
+     * as they may be overwritten by BambuLab system. Instead, we download the .info file from API.
+     * 
+     * \param preset_id Preset ID in FilamentHub
+     * \param preset_name Preset name in OrcaSlicer (with [FilamentHub] postfix)
+     * \param access_token JWT token for API access
+     */
+    void update_preset_info_file(int preset_id, const std::string& preset_name, const std::string& access_token);
+
+    /**
      * \brief Import printer profile from FilamentHub without UI dialogs (for sync)
      * 
      * Downloads and imports a printer profile silently, adding [FilamentHub] postfix and saving mapping.
@@ -545,6 +560,7 @@ private:
     Button* m_refresh_button { nullptr }; // Refresh/Reload button
     bool m_is_syncing { false }; // Is sync in progress
     int m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)
+    bool m_full_sync_attempted { false }; // Защита от зацикливания: была ли попытка полной синхронизации
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     int m_unread_notifications_count { 0 }; // Unread notifications count
@@ -557,6 +573,7 @@ private:
         std::string preset_name;
         std::string access_token;
         std::string api_base_url;
+        int user_id; // КРИТИЧНО: Нужен для обновления last_sync_time после завершения импорта
     };
     std::vector<PresetImportTask> m_preset_import_queue; // Queue of presets to import
     std::mutex m_preset_queue_mutex; // Mutex for preset queue

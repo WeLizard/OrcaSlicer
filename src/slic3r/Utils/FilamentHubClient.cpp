@@ -238,6 +238,49 @@ void FilamentHubClient::download_profile(
     }
 }
 
+void FilamentHubClient::download_profile_info(
+    int preset_id,
+    const std::string& access_token,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/presets/" + std::to_string(preset_id) + "/export/orcaslicer.info";
+        
+        // ВАЖНО: Выполняем HTTP запрос в отдельном потоке, чтобы не блокировать текущий поток
+        std::thread([url, access_token, on_complete, on_error]() {
+            try {
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Starting HTTP request for .info file: " << url;
+                
+                Http::get(url)
+                    .header("Content-Type", "text/plain")
+                    .header("Accept", "text/plain")
+                    .header("Authorization", "Bearer " + access_token)
+                    .timeout_connect(10)
+                    .timeout_max(30)
+                    .on_complete([on_complete](std::string body, unsigned status) {
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: .info file download successful. Status: " << status;
+                        on_complete(body, status);
+                    })
+                    .on_error([on_error](std::string body, std::string error, unsigned status) {
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: .info file download failed. Error: " << error << ", Status: " << status;
+                        on_error(body, error, status);
+                    })
+                    .perform_sync();
+                    
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: HTTP request completed for .info file";
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in download_profile_info thread: " << e.what();
+                on_error("", std::string("Exception: ") + e.what(), 0);
+            }
+        }).detach(); // Отсоединяем поток, чтобы он завершился самостоятельно
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in download_profile_info: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
 void FilamentHubClient::get_my_presets(
     const std::string& access_token,
     const std::string& updated_since,
@@ -661,6 +704,36 @@ void FilamentHubClient::get_unread_notifications_count(
             .perform_sync();
     } catch (const std::exception& e) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_unread_notifications_count: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
+void FilamentHubClient::get_presets_stats(
+    const std::string& access_token,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+) const
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/auth/me/presets-stats";
+        
+        Http::get(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .timeout_connect(10)
+            .timeout_max(30)
+            .on_complete([on_complete](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Presets stats retrieved. Status: " << status;
+                on_complete(body, status);
+            })
+            .on_error([on_error](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets stats. Error: " << error << ", Status: " << status;
+                on_error(body, error, status);
+            })
+            .perform_sync();
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in get_presets_stats: " << e.what();
         on_error("", std::string("Exception: ") + e.what(), 0);
     }
 }

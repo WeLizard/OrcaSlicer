@@ -39,7 +39,7 @@
 namespace Slic3r {
 
 // Static member initialization
-const std::string FilamentHubClient::DEFAULT_API_BASE_URL = "http://localhost:8000";
+const std::string FilamentHubClient::DEFAULT_API_BASE_URL = "https://filamenthub.ru";
 std::string FilamentHubClient::s_api_base_url = FilamentHubClient::DEFAULT_API_BASE_URL;
 
 FilamentHubClient::FilamentHubClient()

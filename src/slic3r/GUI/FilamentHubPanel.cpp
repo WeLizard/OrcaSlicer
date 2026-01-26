@@ -97,7 +97,7 @@ static nlohmann::json get_config_json(const DynamicPrintConfig& config) {
 }
 
 // Static member initialization
-const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "http://localhost:3000";
+const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "https://filamenthub.ru";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";
 const std::string FilamentHubPanel::CONFIG_KEY_ACCESS_TOKEN = "access_token";
 const std::string FilamentHubPanel::CONFIG_KEY_USER_ID = "user_id";

@@ -65,7 +65,7 @@ WORKDIR OrcaSlicer
 # Fix Windows line endings for all shell scripts (when building from Windows)
 RUN find . -name "*.sh" -type f -exec sed -i 's/\r$//' {} \;
 
-# These can run together, but we run them seperate for podman caching
+# These can run together, but we run them separate for podman caching
 # Update System dependencies
 RUN ./build_linux.sh -u
 

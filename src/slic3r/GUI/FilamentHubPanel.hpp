@@ -52,13 +52,13 @@ namespace GUI {
 
 /**
  * \brief FilamentHub Panel for OrcaSlicer
- * 
+ *
  * This panel displays the FilamentHub web frontend in a WebView:
- * - Full React frontend from http://localhost:3000
+ * - Full React frontend from https://filamenthub.ru
  * - Authentication, browsing, and profile management
  * - Import profiles from FilamentHub to OrcaSlicer
  * - Sync user presets with FilamentHub
- * 
+ *
  * This panel appears as a new tab in the main window (next to Prepare, Preview, Printer, Project).
  */
 class FilamentHubPanel : public wxPanel
@@ -78,7 +78,7 @@ public:
     /**
      * \brief Load the FilamentHub frontend URL
      */
-    void load_url(const wxString& url = "http://localhost:3000");
+    void load_url(const wxString& url = "https://filamenthub.ru");
 
     /**
      * \brief Reload the web view
@@ -101,7 +101,12 @@ public:
      * \brief Navigate to profile page
      */
     void navigate_to_profile();
-    
+
+    /**
+     * \brief Navigate to wiki page
+     */
+    void navigate_to_wiki();
+
     /**
      * \brief Show login dialog or redirect to login
      */
@@ -551,6 +556,7 @@ private:
     Button* m_sync_button { nullptr }; // Sync button
     Button* m_catalog_button { nullptr }; // Catalog navigation button
     Button* m_profile_button { nullptr }; // Profile navigation button (only if logged in)
+    Button* m_wiki_button { nullptr }; // Wiki navigation button
     Button* m_login_button { nullptr }; // Login button (only if not logged in)
     Button* m_logout_button { nullptr }; // Logout button (only if logged in)
     Button* m_settings_button { nullptr }; // Settings button for URLs

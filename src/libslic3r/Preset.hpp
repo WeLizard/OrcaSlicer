@@ -222,9 +222,13 @@ public:
 
     //BBS: add type for project-embedded
     bool                is_project_embedded = false;
+    // FilamentHub: preset synced from FilamentHub cloud
+    bool                is_filamenthub = false;
     ConfigSubstitutions *loading_substitutions{nullptr};
-    bool                is_user() const { return ! this->is_default && ! this->is_system && ! this->is_project_embedded; }
-    //bool                is_user() const { return ! this->is_default && ! this->is_system; }
+    // User preset = not default, not system, not project-embedded, not filamenthub
+    bool                is_user() const { return !this->is_default && !this->is_system && !this->is_project_embedded && !this->is_filamenthub; }
+    // FilamentHub preset (synced from cloud)
+    bool                is_filamenthub_preset() const { return this->is_filamenthub; }
 
     // Name of the preset, usually derived form the file name.
     std::string         name;

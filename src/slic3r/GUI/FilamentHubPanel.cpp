@@ -151,18 +151,18 @@ void FilamentHubPanel::init()
     wxBoxSizer* info_sizer = new wxBoxSizer(wxHORIZONTAL);
     
     // User info (left side)
-    m_user_name_label = new wxStaticText(m_info_panel, wxID_ANY, _("Sign in to unlock full functionality"), wxDefaultPosition, wxDefaultSize);
+    m_user_name_label = new wxStaticText(m_info_panel, wxID_ANY, _L("Sign in to unlock full functionality"), wxDefaultPosition, wxDefaultSize);
     m_user_name_label->SetFont(wxFont(12, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD));
     info_sizer->Add(m_user_name_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 10);
     
-    m_preset_count_label = new wxStaticText(m_info_panel, wxID_ANY, _("Presets: 0"), wxDefaultPosition, wxDefaultSize);
+    m_preset_count_label = new wxStaticText(m_info_panel, wxID_ANY, _L("Presets: 0"), wxDefaultPosition, wxDefaultSize);
     m_preset_count_label->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_preset_count_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 10);
     
     info_sizer->AddStretchSpacer(); // Push buttons to the right
     
     // Right side: Navigation buttons first (compact style, square corners, no spacing between buttons)
-    m_catalog_button = new Button(m_info_panel, _("Catalog"));
+    m_catalog_button = new Button(m_info_panel, _L("Catalog"));
     set_button_square_style(m_catalog_button, ButtonStyle::Regular);
     m_catalog_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
         m_active_page = "catalog";
@@ -171,19 +171,29 @@ void FilamentHubPanel::init()
     });
     info_sizer->Add(m_catalog_button, 0, wxALIGN_CENTER_VERTICAL);
     
-    m_profile_button = new Button(m_info_panel, _("Profile"));
+    m_profile_button = new Button(m_info_panel, _L("Profile"));
     set_button_square_style(m_profile_button, ButtonStyle::Regular);
-    m_profile_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
+    m_profile_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         m_active_page = "profile";
         update_active_button_style();
-        navigate_to_profile(); 
+        navigate_to_profile();
     });
     m_profile_button->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_profile_button, 0, wxALIGN_CENTER_VERTICAL);
-    
+
+    // Wiki button - always visible
+    m_wiki_button = new Button(m_info_panel, _L("Wiki"));
+    set_button_square_style(m_wiki_button, ButtonStyle::Regular);
+    m_wiki_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_active_page = "wiki";
+        update_active_button_style();
+        navigate_to_wiki();
+    });
+    info_sizer->Add(m_wiki_button, 0, wxALIGN_CENTER_VERTICAL);
+
     // Action buttons
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Creating sync button...";
-    m_sync_button = new Button(m_info_panel, _("Synchronize"));
+    m_sync_button = new Button(m_info_panel, _L("Synchronize"));
     set_button_square_style(m_sync_button, ButtonStyle::Confirm);
     
     // Проверяем, что кнопка создана
@@ -202,24 +212,25 @@ void FilamentHubPanel::init()
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync button hidden by default (will be shown when logged in)";
     info_sizer->Add(m_sync_button, 0, wxALIGN_CENTER_VERTICAL);
 
-    // Settings button - only visible in debug/dev builds, hidden in release
+    // Settings button - visible when Developer Mode is enabled in Preferences
     // Allows changing Frontend URL and API Base URL for development/debugging
-    m_settings_button = new Button(m_info_panel, _("Settings"));
+    m_settings_button = new Button(m_info_panel, _L("Settings"));
     set_button_square_style(m_settings_button, ButtonStyle::Regular);
     m_settings_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_settings_dialog(); });
-    #ifndef NDEBUG
-        // Show settings button only in debug builds
-        info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL);
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Settings button enabled (DEBUG build)";
-    #else
-        // Hide settings button in release builds
+    info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL);
+
+    // Show/hide based on Developer Mode setting
+    bool dev_mode = wxGetApp().app_config->get("developer_mode") == "true";
+    if (dev_mode) {
+        m_settings_button->Show();
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Settings button shown (Developer Mode enabled)";
+    } else {
         m_settings_button->Hide();
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Settings button hidden (RELEASE build)";
-        info_sizer->Add(m_settings_button, 0, wxALIGN_CENTER_VERTICAL); // Add but hidden
-    #endif
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Settings button hidden (Developer Mode disabled)";
+    }
     
     // Refresh button - reloads the current page
-    m_refresh_button = new Button(m_info_panel, _("Refresh"));
+    m_refresh_button = new Button(m_info_panel, _L("Refresh"));
     set_button_square_style(m_refresh_button, ButtonStyle::Regular);
     m_refresh_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { reload(); });
     info_sizer->Add(m_refresh_button, 0, wxALIGN_CENTER_VERTICAL);
@@ -231,7 +242,7 @@ void FilamentHubPanel::init()
     m_notifications_badge = nullptr; // Not used anymore
     
     // Admin button - opens admin panel (only if admin)
-    m_admin_button = new Button(m_info_panel, _("Admin"));
+    m_admin_button = new Button(m_info_panel, _L("Admin"));
     set_button_square_style(m_admin_button, ButtonStyle::Alert);
     m_admin_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
         m_active_page = "admin";
@@ -242,18 +253,18 @@ void FilamentHubPanel::init()
     info_sizer->Add(m_admin_button, 0, wxALIGN_CENTER_VERTICAL);
     
     // Login button - redirects to login page in WebView (user logs in there)
-    m_login_button = new Button(m_info_panel, _("Login"));
+    m_login_button = new Button(m_info_panel, _L("Login"));
     set_button_square_style(m_login_button, ButtonStyle::Confirm);
     m_login_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_login(); });
     info_sizer->Add(m_login_button, 0, wxALIGN_CENTER_VERTICAL);
     
-    m_logout_button = new Button(m_info_panel, _("Logout"));
+    m_logout_button = new Button(m_info_panel, _L("Logout"));
     set_button_square_style(m_logout_button, ButtonStyle::Regular);
     m_logout_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { logout(); });
     m_logout_button->Hide(); // Hidden by default (shown when logged in)
     info_sizer->Add(m_logout_button, 0, wxALIGN_CENTER_VERTICAL);
 
-    m_sync_status_label = new wxStaticText(m_info_panel, wxID_ANY, _("Ready"));
+    m_sync_status_label = new wxStaticText(m_info_panel, wxID_ANY, _L("Ready"));
     m_sync_status_label->Hide();
     info_sizer->Add(m_sync_status_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 5);
 
@@ -586,7 +597,7 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
             if (preset_id <= 0) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Invalid preset_id: " << preset_id;
                 send_response("import_profile", "error", 
-                    wxString::Format(_("Invalid preset ID: %d"), preset_id).ToUTF8().data(), 
+                    wxString::Format(_L("Invalid preset ID: %d"), preset_id).ToUTF8().data(), 
                     sequence_id);
                 wxMessageBox(
                     wxString::Format(_L("Invalid preset ID: %d. Cannot import profile."), preset_id),
@@ -2908,7 +2919,7 @@ void FilamentHubPanel::process_preset_import_queue()
     // Update progress bar UI (в UI потоке)
     CallAfter([this, task, remaining_count]() {
         update_sync_progress_ui(m_synced_count + m_error_count, m_total_presets_to_sync,
-                                wxString::Format(_("Syncing %d/%d: %s"),
+                                wxString::Format(_L("Syncing %d/%d: %s"),
                                                 m_synced_count + m_error_count + 1, m_total_presets_to_sync,
                                                 wxString::FromUTF8(task.preset_name.c_str())));
     });
@@ -2965,7 +2976,7 @@ void FilamentHubPanel::update_user_info()
     
     if (access_token.empty()) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: Access token is empty, cannot get user info";
-        m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+        m_user_name_label->SetLabel(wxString::Format(_L("User %d"), user_id));
         return;
     }
     
@@ -2989,7 +3000,7 @@ void FilamentHubPanel::update_user_info()
             
             if (http_status != 200) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get user info. Status: " << http_status;
-                m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+                m_user_name_label->SetLabel(wxString::Format(_L("User %d"), user_id));
                 return;
             }
             
@@ -3050,7 +3061,7 @@ void FilamentHubPanel::update_user_info()
                 } else if (!email.empty()) {
                     display_name = wxString::FromUTF8(email);
                 } else {
-                    display_name = wxString::Format(_("User %d"), user_id);
+                    display_name = wxString::Format(_L("User %d"), user_id);
                     BOOST_LOG_TRIVIAL(warning) << "FilamentHub: No name/email found, using default: " << display_name.ToUTF8();
                 }
                 
@@ -3065,7 +3076,7 @@ void FilamentHubPanel::update_user_info()
                     
                     if (access_token_inner.empty()) {
                         BOOST_LOG_TRIVIAL(error) << "FilamentHub: Access token is empty, cannot get presets stats";
-                        m_preset_count_label->SetLabel(_("Presets: ?"));
+                        m_preset_count_label->SetLabel(_L("Presets: ?"));
                         return;
                     }
                     
@@ -3081,13 +3092,13 @@ void FilamentHubPanel::update_user_info()
                             if (http_status == 401) {
                                 // Токен истек - не обновляем UI, так как уже обработано в get_current_user
                                 BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired (401) when getting presets stats";
-                                m_preset_count_label->SetLabel(_("Presets: ?"));
+                                m_preset_count_label->SetLabel(_L("Presets: ?"));
                                 return;
                             }
                             
                             if (http_status != 200) {
                                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets stats. Status: " << http_status;
-                                m_preset_count_label->SetLabel(_("Presets: ?"));
+                                m_preset_count_label->SetLabel(_L("Presets: ?"));
                                 return;
                             }
                             
@@ -3099,15 +3110,15 @@ void FilamentHubPanel::update_user_info()
                                 int synced_presets = response.value("synced_presets", 0);
                                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Total presets: " << total_presets << ", Synced: " << synced_presets;
                                 // Показываем общее количество и количество синхронизированных
-                                m_preset_count_label->SetLabel(wxString::Format(_("Presets: %d (%d synced)"), total_presets, synced_presets));
+                                m_preset_count_label->SetLabel(wxString::Format(_L("Presets: %d (%d synced)"), total_presets, synced_presets));
                             } catch (const std::exception& e) {
                                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing presets stats: " << e.what();
                                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
-                                m_preset_count_label->SetLabel(_("Presets: ?"));
+                                m_preset_count_label->SetLabel(_L("Presets: ?"));
                             } catch (...) {
                                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unknown exception when parsing presets stats";
                                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
-                                m_preset_count_label->SetLabel(_("Presets: ?"));
+                                m_preset_count_label->SetLabel(_L("Presets: ?"));
                             }
                         },
                         [this](std::string body, std::string error, unsigned http_status) {
@@ -3119,7 +3130,7 @@ void FilamentHubPanel::update_user_info()
                                 BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Token expired (401), not showing error";
                                 return;
                             }
-                            m_preset_count_label->SetLabel(_("Presets: ?"));
+                            m_preset_count_label->SetLabel(_L("Presets: ?"));
                         }
                     );
                 }
@@ -3129,7 +3140,7 @@ void FilamentHubPanel::update_user_info()
                 // Логируем тело ответа для отладки (первые 500 символов)
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
                 CallAfter([this, user_id, e]() {
-                    m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+                    m_user_name_label->SetLabel(wxString::Format(_L("User %d"), user_id));
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
                         "error"
@@ -3140,7 +3151,7 @@ void FilamentHubPanel::update_user_info()
                 // Логируем тело ответа для отладки
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));
                 CallAfter([this, user_id]() {
-                    m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+                    m_user_name_label->SetLabel(wxString::Format(_L("User %d"), user_id));
                     show_notification_in_webview(
                         _L("Error parsing server response: Unknown exception"),
                         "error"
@@ -3151,7 +3162,7 @@ void FilamentHubPanel::update_user_info()
         // on_error: failed to get user info
         [this, user_id](std::string body, std::string error, unsigned http_status) {
             BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to get user info. Error: " << error;
-            m_user_name_label->SetLabel(wxString::Format(_("User %d"), user_id));
+            m_user_name_label->SetLabel(wxString::Format(_L("User %d"), user_id));
         }
     );
 }
@@ -3177,14 +3188,14 @@ void FilamentHubPanel::update_sync_button_state(bool is_syncing)
     
     if (is_syncing) {
         if (m_sync_button) {
-            m_sync_button->SetLabel(_("Synchronizing..."));
+            m_sync_button->SetLabel(_L("Synchronizing..."));
             m_sync_button->Disable();
         }
         // НЕ показываем прогресс-бар здесь - он будет показан позже, когда узнаем количество пресетов
         // Прогресс-бар будет показан в процессе синхронизации (в callback после получения списка пресетов)
     } else {
         if (m_sync_button) {
-            m_sync_button->SetLabel(_("Synchronize"));
+            m_sync_button->SetLabel(_L("Synchronize"));
             m_sync_button->Enable();
         }
         // ВАЖНО: Всегда скрываем прогресс-бар и статус при завершении синхронизации
@@ -3250,8 +3261,8 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Hiding sync button (user is not logged in)";
         
         // Update labels
-        m_user_name_label->SetLabel(_("Sign in to unlock full functionality"));
-        m_preset_count_label->SetLabel(_("Presets: 0"));
+        m_user_name_label->SetLabel(_L("Sign in to unlock full functionality"));
+        m_preset_count_label->SetLabel(_L("Presets: 0"));
     }
     
     m_info_panel->Layout();
@@ -3264,6 +3275,13 @@ void FilamentHubPanel::navigate_to_catalog()
     update_active_button_style();
     // Используем JavaScript навигацию через React Router без перезагрузки страницы
     navigate_without_reload("/");
+}
+
+void FilamentHubPanel::navigate_to_wiki()
+{
+    m_active_page = "wiki";
+    update_active_button_style();
+    navigate_without_reload("/wiki");
 }
 
 void FilamentHubPanel::navigate_to_profile()
@@ -3283,16 +3301,21 @@ void FilamentHubPanel::update_active_button_style()
     if (m_profile_button) {
         set_button_square_style(m_profile_button, ButtonStyle::Regular);
     }
+    if (m_wiki_button) {
+        set_button_square_style(m_wiki_button, ButtonStyle::Regular);
+    }
     if (m_admin_button) {
         // Admin button uses Alert style when inactive
         set_button_square_style(m_admin_button, ButtonStyle::Alert);
     }
-    
+
     // Set active button to Confirm style (green) - keep square corners
     if (m_active_page == "catalog" && m_catalog_button) {
         set_button_square_style(m_catalog_button, ButtonStyle::Confirm);
     } else if (m_active_page == "profile" && m_profile_button) {
         set_button_square_style(m_profile_button, ButtonStyle::Confirm);
+    } else if (m_active_page == "wiki" && m_wiki_button) {
+        set_button_square_style(m_wiki_button, ButtonStyle::Confirm);
     } else if (m_active_page == "admin" && m_admin_button) {
         set_button_square_style(m_admin_button, ButtonStyle::Confirm);
     }
@@ -3562,6 +3585,10 @@ void FilamentHubPanel::update_async_ui()
 
     if (m_profile_button != nullptr) {
         m_profile_button->Enable(!busy);
+    }
+
+    if (m_wiki_button != nullptr) {
+        m_wiki_button->Enable(!busy);
     }
 
     if (m_refresh_button != nullptr) {

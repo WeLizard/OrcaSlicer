@@ -22836,3 +22836,71 @@ msgstr ""
 
 #~ msgid "Right click to reset value to system default."
 #~ msgstr "Правая кнопка мыши - сброс значения до системного по умолчанию."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Synchronize"
+msgstr "Синхронизировать"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Logout"
+msgstr "Выйти"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Profile"
+msgstr "Профиль"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Catalog"
+msgstr "Каталог"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Admin"
+msgstr "Админ"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Presets: 0"
+msgstr "Пресеты: 0"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Presets: ?"
+msgstr "Пресеты: ?"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Presets: %d (%d synced)"
+msgstr "Пресеты: %d (%d синхр.)"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Sign in to unlock full functionality"
+msgstr "Войдите для доступа ко всем функциям"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Ready"
+msgstr "Готово"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "User %d"
+msgstr "Пользователь %d"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Synchronizing..."
+msgstr "Синхронизация..."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Syncing %d/%d: %s"
+msgstr "Синхр. %d/%d: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Invalid preset ID: %d"
+msgstr "Неверный ID пресета: %d"
+
+#: src/slic3r/GUI/PresetComboBoxes.cpp
+msgid "FilamentHub presets"
+msgstr "Пресеты FilamentHub"
+
+#: src/slic3r/GUI/PresetComboBoxes.cpp
+msgid "FilamentHub"
+msgstr "FilamentHub"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Wiki"
+msgstr "База знаний"

@@ -1179,7 +1179,7 @@ void MainFrame::init_tabpanel() {
     // FilamentHub Panel
     m_filamenthub_panel = new FilamentHubPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
     m_filamenthub_panel->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->AddPage(m_filamenthub_panel, _L("FilamentHub"), std::string("tab_auxiliary_active"), std::string("tab_auxiliary_active"), false);
+    m_tabpanel->AddPage(m_filamenthub_panel, _L("FilamentHub"), std::string("tab_filamenthub_active"), std::string("tab_filamenthub_active"), false);
 
     if (m_plater) {
         // load initial config

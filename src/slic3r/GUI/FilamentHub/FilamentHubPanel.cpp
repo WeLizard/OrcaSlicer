@@ -28,7 +28,7 @@ namespace GUI {
 
 // Constants
 namespace {
-    const char* FILAMENTHUB_URL = "http://localhost:3000";
+    const char* FILAMENTHUB_URL = "https://filamenthub.ru";
     const char* LOGIN_PATH = "/login";
     const char* DASHBOARD_PATH = "/dashboard";
     const int PROGRESS_BAR_RANGE = 100;

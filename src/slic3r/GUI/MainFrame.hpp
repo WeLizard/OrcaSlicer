@@ -22,7 +22,7 @@
 #include "Auxiliary.hpp"
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
-#include "FilamentHubPanel.hpp"
+#include "FilamentHub/FilamentHubPanel.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"

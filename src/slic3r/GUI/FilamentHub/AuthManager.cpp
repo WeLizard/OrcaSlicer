@@ -1,4 +1,5 @@
 #include "AuthManager.hpp"
+#include "slic3r/Utils/Http.hpp"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -7,18 +8,6 @@
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
 #include <wx/log.h>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/version.hpp>
-#include <boost/asio/connect.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/ssl.hpp>
-
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace net = boost::asio;
-namespace ssl = boost::asio::ssl;
-using tcp = boost::asio::ip::tcp;
 
 namespace Slic3r {
 namespace GUI {
@@ -535,69 +524,68 @@ void AuthManager::notify_auth_state_changed()
     }
 }
 
-// HTTP helper
+// HTTP helper using OrcaSlicer Http class
 nlohmann::json AuthManager::make_auth_request(
     const std::string& method,
     const std::string& endpoint,
     const nlohmann::json& body,
     bool include_auth_header)
 {
-    try {
-        // TODO: This should use FilamentHubClient or similar HTTP client
-        // For now, implementing basic Boost.Beast HTTP request
+    std::string host = "localhost";
+    std::string port = "8000";
+    std::string url = "http://" + host + ":" + port + endpoint;
 
-        std::string host = "localhost"; // TODO: Make configurable
-        std::string port = "8000";      // TODO: Make configurable
+    std::string response_body;
+    std::string error_message;
+    unsigned    status_code = 0;
 
-        net::io_context ioc;
-        tcp::resolver resolver(ioc);
-        beast::tcp_stream stream(ioc);
-
-        // Look up the domain name
-        auto const results = resolver.resolve(host, port);
-
-        // Make the connection
-        stream.connect(results);
-
-        // Set up the HTTP request
-        http::request<http::string_body> req;
-        req.method(method == "POST" ? http::verb::post : http::verb::get);
-        req.target(endpoint);
-        req.version(11);
-        req.set(http::field::host, host);
-        req.set(http::field::user_agent, "OrcaSlicer-FilamentHub/1.0");
-        req.set(http::field::content_type, "application/json");
+    auto configure_request = [&](Slic3r::Http& http_req) -> Slic3r::Http& {
+        http_req.header("Content-Type", "application/json")
+                .header("User-Agent", "OrcaSlicer-FilamentHub/1.0");
 
         if (include_auth_header && !m_auth_state.access_token.empty()) {
-            req.set(http::field::authorization, "Bearer " + m_auth_state.access_token);
+            http_req.header("Authorization", "Bearer " + m_auth_state.access_token);
         }
 
         if (body != nullptr && !body.is_null()) {
-            std::string body_str = body.dump();
-            req.body() = body_str;
-            req.prepare_payload();
+            http_req.set_post_body(body.dump());
         }
 
-        // Send the HTTP request
-        http::write(stream, req);
+        http_req
+            .on_complete([&](std::string resp_body, unsigned http_status) {
+                response_body = std::move(resp_body);
+                status_code = http_status;
+            })
+            .on_error([&](std::string resp_body, std::string err, unsigned http_status) {
+                response_body = std::move(resp_body);
+                status_code = http_status;
+                error_message = std::move(err);
+            });
 
-        // Receive the HTTP response
-        beast::flat_buffer buffer;
-        http::response<http::string_body> res;
-        http::read(stream, buffer, res);
+        return http_req;
+    };
 
-        // Gracefully close the socket
-        beast::error_code ec;
-        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
-
-        // Check response status
-        if (res.result() != http::status::ok) {
-            throw std::runtime_error("HTTP request failed with status: " + std::to_string(res.result_int()));
+    try {
+        if (method == "POST") {
+            auto req = Slic3r::Http::post(url);
+            configure_request(req);
+            req.perform_sync();
+        } else {
+            auto req = Slic3r::Http::get(url);
+            configure_request(req);
+            req.perform_sync();
         }
 
-        // Parse JSON response
-        return nlohmann::json::parse(res.body());
+        if (!error_message.empty()) {
+            throw std::runtime_error("HTTP request failed: " + error_message +
+                (status_code > 0 ? " (HTTP " + std::to_string(status_code) + ")" : ""));
+        }
 
+        return nlohmann::json::parse(response_body);
+
+    } catch (const nlohmann::json::parse_error& e) {
+        wxLogError("FilamentHub: Failed to parse auth response: %s", e.what());
+        throw std::runtime_error("Invalid JSON response from auth server");
     } catch (const std::exception& e) {
         wxLogError("FilamentHub: HTTP request failed: %s", e.what());
         throw;

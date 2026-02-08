@@ -1,5 +1,6 @@
 #include "PresetImporter.hpp"
 #include "AuthManager.hpp"
+#include "slic3r/Utils/Http.hpp"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -8,17 +9,7 @@
 #include <wx/filename.h>
 #include <wx/log.h>
 #include <wx/utils.h>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/version.hpp>
-#include <boost/asio/connect.hpp>
-#include <boost/asio/ip/tcp.hpp>
 #include <boost/algorithm/string.hpp>
-
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace net = boost::asio;
-using tcp = boost::asio::ip::tcp;
 
 namespace Slic3r {
 namespace GUI {
@@ -921,92 +912,84 @@ void PresetImporter::process_next_task(
     // Currently processing is done synchronously in process_queue()
 }
 
-// HTTP helper
+// HTTP helper using OrcaSlicer Http class
 nlohmann::json PresetImporter::make_api_request(
     const std::string& method,
     const std::string& endpoint,
     const nlohmann::json& body)
 {
-    try {
-        if (!m_auth_manager->is_logged_in()) {
-            throw std::runtime_error("Not authenticated");
-        }
+    if (!m_auth_manager->is_logged_in()) {
+        throw std::runtime_error("Not authenticated");
+    }
 
-        // Check if token needs refresh
-        if (!m_auth_manager->refresh_token_if_needed()) {
-            throw std::runtime_error("Failed to refresh authentication token");
-        }
+    // Check if token needs refresh
+    if (!m_auth_manager->refresh_token_if_needed()) {
+        throw std::runtime_error("Failed to refresh authentication token");
+    }
 
-        net::io_context ioc;
-        tcp::resolver resolver(ioc);
-        beast::tcp_stream stream(ioc);
+    std::string url = std::string("http://") + API_HOST + ":" + API_PORT + endpoint;
 
-        // Resolve and connect
-        auto const results = resolver.resolve(API_HOST, API_PORT);
-        stream.connect(results);
+    std::string response_body;
+    std::string error_message;
+    unsigned    status_code = 0;
 
-        // Build request
-        http::request<http::string_body> req;
-        req.method(method == "POST" ? http::verb::post : http::verb::get);
-        req.target(endpoint);
-        req.version(11);
-        req.set(http::field::host, API_HOST);
-        req.set(http::field::user_agent, "OrcaSlicer-FilamentHub/1.0");
-        req.set(http::field::content_type, "application/json");
-        req.set(http::field::authorization, "Bearer " + m_auth_manager->get_token());
+    auto configure_request = [&](Slic3r::Http& http_req) -> Slic3r::Http& {
+        http_req.header("Content-Type", "application/json")
+                .header("User-Agent", "OrcaSlicer-FilamentHub/1.0")
+                .header("Authorization", "Bearer " + m_auth_manager->get_token());
 
         if (body != nullptr && !body.is_null()) {
-            std::string body_str = body.dump();
-            req.body() = body_str;
-            req.prepare_payload();
+            http_req.set_post_body(body.dump());
         }
 
-        // Send request
-        http::write(stream, req);
+        http_req
+            .on_complete([&](std::string resp_body, unsigned http_status) {
+                response_body = std::move(resp_body);
+                status_code = http_status;
+            })
+            .on_error([&](std::string resp_body, std::string err, unsigned http_status) {
+                response_body = std::move(resp_body);
+                status_code = http_status;
+                error_message = std::move(err);
+            });
 
-        // Receive response
-        beast::flat_buffer buffer;
-        http::response<http::string_body> res;
-        http::read(stream, buffer, res);
+        return http_req;
+    };
 
-        // Close connection
-        beast::error_code ec;
-        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+    try {
+        if (method == "POST") {
+            auto req = Slic3r::Http::post(url);
+            configure_request(req);
+            req.perform_sync();
+        } else {
+            auto req = Slic3r::Http::get(url);
+            configure_request(req);
+            req.perform_sync();
+        }
 
-        // Handle different HTTP status codes
-        if (res.result() == http::status::unauthorized) {
-            // Token might be expired, try to refresh
+        // Handle 401 — try token refresh and retry once
+        if (status_code == 401) {
             if (m_auth_manager->refresh_token_if_needed()) {
-                // Retry the request once with new token
                 wxLogMessage("FilamentHub: Retrying request with refreshed token");
-                return make_api_request(method, endpoint, body); // Recursive call
+                return make_api_request(method, endpoint, body);
             }
             throw std::runtime_error("Authentication failed");
         }
 
-        if (res.result() != http::status::ok) {
-            std::string error_msg = "HTTP request failed with status: " +
-                                   std::to_string(res.result_int());
-
-            // Try to extract error message from response body
-            try {
-                nlohmann::json error_json = nlohmann::json::parse(res.body());
-                if (error_json.contains("detail")) {
-                    error_msg += " - " + error_json["detail"].get<std::string>();
-                }
-            } catch (...) {
-                // Response body is not JSON, use as-is
-                if (!res.body().empty()) {
-                    error_msg += " - " + res.body().substr(0, 200);
-                }
-            }
-
-            throw std::runtime_error(error_msg);
+        if (!error_message.empty()) {
+            std::string msg = "HTTP request failed: " + error_message;
+            if (status_code > 0)
+                msg += " (HTTP " + std::to_string(status_code) + ")";
+            if (!response_body.empty())
+                msg += " - " + response_body.substr(0, 200);
+            throw std::runtime_error(msg);
         }
 
-        // Parse response
-        return nlohmann::json::parse(res.body());
+        return nlohmann::json::parse(response_body);
 
+    } catch (const nlohmann::json::parse_error& e) {
+        wxLogError("FilamentHub: Failed to parse API response: %s", e.what());
+        throw std::runtime_error("Invalid JSON response from server");
     } catch (const std::exception& e) {
         wxLogError("FilamentHub: API request failed: %s", e.what());
         throw;

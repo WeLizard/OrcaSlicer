@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <queue>
+#include <map>
 #include <memory>
 #include <functional>
 #include "nlohmann/json.hpp"
@@ -120,6 +121,18 @@ private:
         const nlohmann::json& preset_data,
         const std::string& preset_type
     );
+
+    bool validate_bundle_format(const std::string& content, const std::string& preset_type);
+    std::vector<std::string> parse_bundle_sections(const std::string& content);
+    std::map<std::string, std::string> parse_ini_section(const std::string& section);
+    bool import_preset_section(const std::string& section_text, const std::string& preset_type);
+    bool validate_filament_settings(const nlohmann::json& settings, std::string& error);
+    bool validate_printer_settings(const nlohmann::json& settings, std::string& error);
+    bool validate_print_settings(const nlohmann::json& settings, std::string& error);
+    bool check_preset_exists(const std::string& preset_name, const std::string& preset_type);
+    bool should_overwrite_preset(const std::string& preset_name, const std::string& preset_type, const nlohmann::json& new_data);
+    nlohmann::json extract_metadata(const nlohmann::json& preset_data);
+    void update_preset_metadata(const std::string& preset_name, const std::string& preset_type, const nlohmann::json& metadata);
 
     // File operations
     std::string create_temp_preset_file(const std::string& content);

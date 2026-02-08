@@ -2,6 +2,9 @@
 #include "AuthManager.hpp"
 #include "SyncCoordinator.hpp"
 #include "PresetImporter.hpp"
+#include "../I18N.hpp"
+#include "../Widgets/WebView.hpp"
+#include "../GUI_App.hpp"
 #include <wx/sizer.h>
 #include <wx/webview.h>
 #include <wx/button.h>
@@ -37,27 +40,17 @@ namespace {
     const int BUTTON_MIN_WIDTH = 120;
     const int BUTTON_HEIGHT = 30;
 
-    // Russian localization strings
-    const std::string MSG_LOGIN = "Вход";
-    const std::string MSG_LOGOUT = "Выход";
-    const std::string MSG_SYNC = "Синхронизировать";
-    const std::string MSG_CANCEL = "Отменить";
-    const std::string MSG_SYNCING = "Синхронизация...";
-    const std::string MSG_SYNC_COMPLETE = "Синхронизация завершена";
-    const std::string MSG_SYNC_CANCELLED = "Синхронизация отменена";
-    const std::string MSG_SYNC_FAILED = "Ошибка синхронизации";
-    const std::string MSG_LOGIN_SUCCESS = "Вход выполнен успешно";
-    const std::string MSG_LOGIN_FAILED = "Ошибка входа";
-    const std::string MSG_LOGOUT_SUCCESS = "Выход выполнен";
-    const std::string MSG_NOT_LOGGED_IN = "Необходимо войти в систему";
-    const std::string MSG_PRESET_DOWNLOADED = "Загружен пресет";
-    const std::string MSG_DOWNLOADING_PRESETS = "Загрузка пресетов";
 }
 
 // FilamentHubPanel implementation
 
-FilamentHubPanel::FilamentHubPanel(wxWindow* parent)
-    : wxPanel(parent, wxID_ANY)
+FilamentHubPanel::FilamentHubPanel(
+    wxWindow* parent,
+    wxWindowID id,
+    const wxPoint& pos,
+    const wxSize& size
+)
+    : wxPanel(parent, id, pos, size)
     , m_webview(nullptr)
     , m_login_button(nullptr)
     , m_logout_button(nullptr)
@@ -124,14 +117,14 @@ void FilamentHubPanel::create_layout()
     // Control panel with buttons
     wxBoxSizer* control_sizer = new wxBoxSizer(wxHORIZONTAL);
 
-    m_login_button = new wxButton(this, wxID_ANY, MSG_LOGIN,
-        wxDefaultPosition, wxSize(BUTTON_MIN_WIDTH, BUTTON_HEIGHT));
-    m_logout_button = new wxButton(this, wxID_ANY, MSG_LOGOUT,
-        wxDefaultPosition, wxSize(BUTTON_MIN_WIDTH, BUTTON_HEIGHT));
-    m_sync_button = new wxButton(this, wxID_ANY, MSG_SYNC,
-        wxDefaultPosition, wxSize(BUTTON_MIN_WIDTH, BUTTON_HEIGHT));
-    m_cancel_button = new wxButton(this, wxID_ANY, MSG_CANCEL,
-        wxDefaultPosition, wxSize(BUTTON_MIN_WIDTH, BUTTON_HEIGHT));
+    m_login_button = new wxButton(this, wxID_ANY, _L("Login"),
+        wxDefaultPosition, wxSize(FromDIP(BUTTON_MIN_WIDTH), FromDIP(BUTTON_HEIGHT)));
+    m_logout_button = new wxButton(this, wxID_ANY, _L("Logout"),
+        wxDefaultPosition, wxSize(FromDIP(BUTTON_MIN_WIDTH), FromDIP(BUTTON_HEIGHT)));
+    m_sync_button = new wxButton(this, wxID_ANY, _L("Synchronize"),
+        wxDefaultPosition, wxSize(FromDIP(BUTTON_MIN_WIDTH), FromDIP(BUTTON_HEIGHT)));
+    m_cancel_button = new wxButton(this, wxID_ANY, _L("Cancel"),
+        wxDefaultPosition, wxSize(FromDIP(BUTTON_MIN_WIDTH), FromDIP(BUTTON_HEIGHT)));
 
     control_sizer->Add(m_login_button, 0, wxALL, 5);
     control_sizer->Add(m_logout_button, 0, wxALL, 5);
@@ -161,33 +154,22 @@ void FilamentHubPanel::create_layout()
 
 void FilamentHubPanel::setup_webview()
 {
-    #if wxUSE_WEBVIEW
-    try {
-        // Create WebView with default backend
-        m_webview = wxWebView::New(this, wxID_ANY, FILAMENTHUB_URL,
-            wxDefaultPosition, wxSize(WEBVIEW_MIN_WIDTH, WEBVIEW_MIN_HEIGHT));
+    // Use OrcaSlicer's WebView factory — handles Edge/WebKit detection,
+    // runtime installation, DPI, dark mode, etc.
+    m_webview = WebView::CreateWebView(this, FILAMENTHUB_URL);
 
-        if (m_webview) {
-            // Add to sizer
-            GetSizer()->Add(m_webview, 1, wxEXPAND | wxALL, 5);
-
-            // Enable developer tools if available
-            #ifdef __WXMSW__
-            if (m_webview->IsBackendAvailable(wxWebViewBackendEdge)) {
-                // Edge backend supports dev tools
-            }
-            #endif
-
-            Layout();
-        } else {
-            wxLogError("Failed to create WebView");
-        }
-    } catch (const std::exception& e) {
-        wxLogError("WebView creation error: %s", e.what());
+    if (m_webview) {
+        GetSizer()->Add(m_webview, 1, wxEXPAND | wxALL, 5);
+        Layout();
+    } else {
+        wxLogError("FilamentHub: Failed to create WebView");
+        // Fallback: show static text
+        auto* placeholder = new wxStaticText(this, wxID_ANY,
+            _L("WebView is not available. Please install Microsoft Edge WebView2 Runtime."),
+            wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
+        GetSizer()->Add(placeholder, 1, wxEXPAND | wxALL, FromDIP(20));
+        Layout();
     }
-    #else
-    wxLogError("wxWebView not available - build OrcaSlicer with wxUSE_WEBVIEW=1");
-    #endif
 }
 
 void FilamentHubPanel::setup_buttons()
@@ -204,9 +186,7 @@ void FilamentHubPanel::bind_events()
     m_sync_button->Bind(wxEVT_BUTTON, &FilamentHubPanel::on_sync_clicked, this);
     m_cancel_button->Bind(wxEVT_BUTTON, &FilamentHubPanel::on_cancel_sync_clicked, this);
 
-    #if wxUSE_WEBVIEW
     if (m_webview) {
-        // WebView events
         m_webview->Bind(wxEVT_WEBVIEW_NAVIGATING, &FilamentHubPanel::on_navigation_request, this);
         m_webview->Bind(wxEVT_WEBVIEW_LOADED, &FilamentHubPanel::on_page_loaded, this);
         m_webview->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &FilamentHubPanel::on_script_message, this);
@@ -214,7 +194,6 @@ void FilamentHubPanel::bind_events()
             wxLogError("WebView error: %s", evt.GetString());
         });
     }
-    #endif
 }
 
 void FilamentHubPanel::update_button_states()
@@ -237,18 +216,15 @@ void FilamentHubPanel::update_button_states()
 
 void FilamentHubPanel::load_page(const std::string& url)
 {
-    #if wxUSE_WEBVIEW
-    if (m_webview) {
-        std::string full_url = url;
-        if (url[0] == '/') {
-            // Relative URL - prepend base
-            full_url = std::string(FILAMENTHUB_URL) + url;
-        }
+    if (!m_webview) return;
 
-        wxLogMessage("Loading FilamentHub page: %s", full_url.c_str());
-        m_webview->LoadURL(full_url);
+    std::string full_url = url;
+    if (!url.empty() && url[0] == '/') {
+        full_url = std::string(FILAMENTHUB_URL) + url;
     }
-    #endif
+
+    wxLogMessage("Loading FilamentHub page: %s", full_url.c_str());
+    WebView::LoadUrl(m_webview, full_url);
 }
 
 // Authentication Handlers
@@ -271,8 +247,8 @@ void FilamentHubPanel::on_logout_clicked(wxCommandEvent& event)
 
     // Confirm logout
     wxMessageDialog confirm(this,
-        wxT("Вы уверены, что хотите выйти из системы?"),
-        wxT("Подтверждение выхода"),
+        _L("Are you sure you want to log out?"),
+        _L("Confirm logout"),
         wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
 
     if (confirm.ShowModal() != wxID_YES) {
@@ -286,7 +262,7 @@ void FilamentHubPanel::on_logout_clicked(wxCommandEvent& event)
     update_auth_status();
     load_page(LOGIN_PATH);
 
-    show_notification(MSG_LOGOUT_SUCCESS, "Вы вышли из системы FilamentHub");
+    show_notification(_u8L("Logged out"), _u8L("You have been logged out of FilamentHub"));
 }
 
 void FilamentHubPanel::update_auth_status()
@@ -297,7 +273,7 @@ void FilamentHubPanel::update_auth_status()
 
     if (logged_in) {
         std::string username = m_auth_manager->get_username();
-        std::string status = "Авторизован: " + username;
+        std::string status = _u8L("Logged in: ") + username;
 
         // Inject user info into WebView if page is loaded
         if (m_webview) {
@@ -324,8 +300,8 @@ void FilamentHubPanel::update_auth_status()
 void FilamentHubPanel::on_sync_clicked(wxCommandEvent& event)
 {
     if (!m_auth_manager->is_logged_in()) {
-        show_notification(MSG_NOT_LOGGED_IN,
-            "Пожалуйста, войдите в систему для синхронизации пресетов", true);
+        show_notification(_u8L("Login required"),
+            _u8L("Please log in to synchronize presets"), true);
         return;
     }
 
@@ -336,14 +312,14 @@ void FilamentHubPanel::on_sync_clicked(wxCommandEvent& event)
 
     // Show sync options dialog
     wxArrayString choices;
-    choices.Add("Филаменты (Filament Profiles)");
-    choices.Add("Принтеры (Printer Profiles)");
-    choices.Add("Печать (Print Profiles)");
-    choices.Add("Всё (All Presets)");
+    choices.Add(_L("Filament Profiles"));
+    choices.Add(_L("Printer Profiles"));
+    choices.Add(_L("Print Profiles"));
+    choices.Add(_L("All Presets"));
 
     wxSingleChoiceDialog dialog(this,
-        wxT("Выберите тип пресетов для синхронизации:"),
-        wxT("Синхронизация FilamentHub"),
+        _L("Select preset type to synchronize:"),
+        _L("FilamentHub Synchronization"),
         choices);
 
     dialog.SetSelection(3); // Default to "All"
@@ -380,12 +356,12 @@ void FilamentHubPanel::sync_preset_type(PresetType type)
 {
     std::string type_name;
     switch (type) {
-        case PresetType::Filament: type_name = "филаменты"; break;
-        case PresetType::Printer: type_name = "принтеры"; break;
-        case PresetType::Print: type_name = "профили печати"; break;
+        case PresetType::Filament: type_name = _u8L("filaments"); break;
+        case PresetType::Printer: type_name = _u8L("printers"); break;
+        case PresetType::Print: type_name = _u8L("print profiles"); break;
     }
 
-    update_sync_progress(0, "Начало синхронизации: " + type_name);
+    update_sync_progress(0, _u8L("Starting sync: ") + type_name);
 
     // Progress callback
     auto on_progress = [this, type_name](int progress, const std::string& message) {
@@ -403,12 +379,12 @@ void FilamentHubPanel::sync_preset_type(PresetType type)
             update_button_states();
 
             if (success) {
-                update_sync_progress(100, MSG_SYNC_COMPLETE);
-                show_notification(MSG_SYNC_COMPLETE,
-                    "Синхронизация " + type_name + " завершена успешно");
+                update_sync_progress(100, _u8L("Sync complete"));
+                show_notification(_u8L("Sync complete"),
+                    _u8L("Synchronization of ") + type_name + _u8L(" completed successfully"));
             } else {
-                update_sync_progress(0, MSG_SYNC_FAILED);
-                show_notification(MSG_SYNC_FAILED, error_msg, true);
+                update_sync_progress(0, _u8L("Sync failed"));
+                show_notification(_u8L("Sync failed"), error_msg, true);
             }
         });
     };
@@ -434,12 +410,12 @@ void FilamentHubPanel::sync_all_presets()
                     update_button_states();
 
                     if (success) {
-                        update_sync_progress(100, MSG_SYNC_COMPLETE);
-                        show_notification(MSG_SYNC_COMPLETE,
-                            "Синхронизация всех пресетов завершена");
+                        update_sync_progress(100, _u8L("Sync complete"));
+                        show_notification(_u8L("Sync complete"),
+                            _u8L("Synchronization of all presets complete"));
                     } else {
-                        update_sync_progress(0, MSG_SYNC_FAILED);
-                        show_notification(MSG_SYNC_FAILED, error_msg, true);
+                        update_sync_progress(0, _u8L("Sync failed"));
+                        show_notification(_u8L("Sync failed"), error_msg, true);
                     }
                 });
             };
@@ -461,7 +437,7 @@ void FilamentHubPanel::sync_all_presets()
                 wxTheApp->CallAfter([this, error_msg]() {
                     m_is_syncing = false;
                     update_button_states();
-                    show_notification(MSG_SYNC_FAILED, error_msg, true);
+                    show_notification(_u8L("Sync failed"), error_msg, true);
                 });
                 return;
             }
@@ -486,7 +462,7 @@ void FilamentHubPanel::sync_all_presets()
             wxTheApp->CallAfter([this, error_msg]() {
                 m_is_syncing = false;
                 update_button_states();
-                show_notification(MSG_SYNC_FAILED, error_msg, true);
+                show_notification(_u8L("Sync failed"), error_msg, true);
             });
             return;
         }
@@ -514,8 +490,8 @@ void FilamentHubPanel::on_cancel_sync_clicked(wxCommandEvent& event)
     }
 
     wxMessageDialog confirm(this,
-        wxT("Отменить синхронизацию?"),
-        wxT("Подтверждение отмены"),
+        _L("Cancel synchronization?"),
+        _L("Confirm cancellation"),
         wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
 
     if (confirm.ShowModal() == wxID_YES) {
@@ -524,9 +500,9 @@ void FilamentHubPanel::on_cancel_sync_clicked(wxCommandEvent& event)
 
         m_is_syncing = false;
         update_button_states();
-        update_sync_progress(0, MSG_SYNC_CANCELLED);
+        update_sync_progress(0, _u8L("Sync cancelled"));
 
-        show_notification(MSG_SYNC_CANCELLED, "Синхронизация была отменена пользователем");
+        show_notification(_u8L("Sync cancelled"), _u8L("Synchronization was cancelled by user"));
     }
 }
 
@@ -584,7 +560,6 @@ void FilamentHubPanel::on_page_loaded(wxWebViewEvent& event)
     update_auth_status();
 
     // Register message handler for communication from WebView
-    #if wxUSE_WEBVIEW
     if (m_webview) {
         std::string script = R"(
             if (!window.filamentHubBridge) {
@@ -619,7 +594,6 @@ void FilamentHubPanel::on_page_loaded(wxWebViewEvent& event)
 
         run_javascript(script);
     }
-    #endif
 }
 
 void FilamentHubPanel::on_script_message(wxWebViewEvent& event)
@@ -650,12 +624,12 @@ void FilamentHubPanel::on_script_message(wxWebViewEvent& event)
 
                     if (success) {
                         update_auth_status();
-                        show_notification(MSG_LOGIN_SUCCESS,
-                            "Добро пожаловать, " + m_auth_manager->get_username());
+                        show_notification(_u8L("Login successful"),
+                            _u8L("Welcome, ") + m_auth_manager->get_username());
                         load_page(DASHBOARD_PATH);
                     } else {
-                        show_notification(MSG_LOGIN_FAILED,
-                            "Не удалось выполнить вход с предоставленным токеном", true);
+                        show_notification(_u8L("Login failed"),
+                            _u8L("Could not log in with the provided token"), true);
                     }
                 }
             }
@@ -742,27 +716,9 @@ bool FilamentHubPanel::is_syncing() const
 
 void FilamentHubPanel::run_javascript(const std::string& script)
 {
-    #if wxUSE_WEBVIEW
     if (m_webview) {
-        try {
-            // Use RunScript for synchronous execution
-            // For large scripts, consider chunking or RunScriptAsync
-            if (script.length() < 1000) {
-                m_webview->RunScript(script);
-            } else {
-                // For large scripts, use async to avoid blocking
-                #if wxCHECK_VERSION(3, 1, 5)
-                m_webview->RunScriptAsync(script);
-                #else
-                // Fallback to sync for older wxWidgets
-                m_webview->RunScript(script);
-                #endif
-            }
-        } catch (const std::exception& e) {
-            wxLogError("JavaScript execution error: %s", e.what());
-        }
+        WebView::RunScript(m_webview, script);
     }
-    #endif
 }
 
 std::string FilamentHubPanel::get_device_fingerprint() const
@@ -831,7 +787,7 @@ void FilamentHubPanel::show_preset_details(const nlohmann::json& preset_data)
     // Show details in message box
     wxMessageDialog dialog(this,
         wxString::FromUTF8(details.str()),
-        wxT("Preset Details"),
+        _L("Preset Details"),
         wxOK | wxICON_INFORMATION);
     dialog.ShowModal();
 }
@@ -847,21 +803,21 @@ void FilamentHubPanel::handle_conflict_resolution(const std::vector<nlohmann::js
         std::string conflict_type = conflict.value("conflict_type", "unknown");
 
         wxString message = wxString::Format(
-            wxT("Обнаружен конфликт для пресета '%s'.\n\n"
-                "Тип конфликта: %s\n\n"
-                "Выберите действие:"),
+            _L("Conflict detected for preset '%s'.\n\n"
+                "Conflict type: %s\n\n"
+                "Choose action:"),
             preset_name.c_str(),
             conflict_type.c_str()
         );
 
         wxArrayString choices;
-        choices.Add("Использовать серверную версию");
-        choices.Add("Сохранить локальную версию");
-        choices.Add("Пропустить этот пресет");
+        choices.Add(_L("Use server version"));
+        choices.Add(_L("Keep local version"));
+        choices.Add(_L("Skip this preset"));
 
         wxSingleChoiceDialog dialog(this,
             message,
-            wxT("Разрешение конфликта"),
+            _L("Conflict resolution"),
             choices);
 
         if (dialog.ShowModal() == wxID_OK) {
@@ -892,16 +848,16 @@ void FilamentHubPanel::apply_server_preset(const nlohmann::json& preset_data)
 
         if (result.success) {
             wxLogMessage("Successfully applied server preset: %s", result.preset_name.c_str());
-            show_notification("Пресет обновлен",
-                "Применена серверная версия пресета: " + result.preset_name);
+            show_notification(_u8L("Preset updated"),
+                _u8L("Server version of preset applied: ") + result.preset_name);
         } else {
             wxLogError("Failed to apply server preset: %s", result.error_message.c_str());
-            show_notification("Ошибка обновления",
-                "Не удалось применить серверную версию: " + result.error_message, true);
+            show_notification(_u8L("Update error"),
+                _u8L("Could not apply server version: ") + result.error_message, true);
         }
     } catch (const std::exception& e) {
         wxLogError("Exception applying server preset: %s", e.what());
-        show_notification("Ошибка", std::string("Ошибка: ") + e.what(), true);
+        show_notification(_u8L("Error"), std::string(_u8L("Error: ")) + e.what(), true);
     }
 }
 
@@ -912,8 +868,8 @@ void FilamentHubPanel::keep_local_preset(const nlohmann::json& preset_data)
     wxLogMessage("Keeping local version of preset: %s", preset_name.c_str());
 
     // In production, might want to upload local version to server
-    show_notification("Локальная версия сохранена",
-        "Сохранена локальная версия пресета: " + preset_name);
+    show_notification(_u8L("Local version kept"),
+        _u8L("Kept local version of preset: ") + preset_name);
 }
 
 void FilamentHubPanel::handle_deleted_presets_ui(const std::vector<nlohmann::json>& deleted)
@@ -923,7 +879,7 @@ void FilamentHubPanel::handle_deleted_presets_ui(const std::vector<nlohmann::jso
     }
 
     std::stringstream message;
-    message << "Следующие пресеты были удалены на сервере:\n\n";
+    message << _u8L("The following presets were deleted on the server:") << "\n\n";
 
     for (const auto& preset : deleted) {
         std::string name = preset.value("name", "Unknown");
@@ -933,24 +889,24 @@ void FilamentHubPanel::handle_deleted_presets_ui(const std::vector<nlohmann::jso
         message << "• " << name;
 
         if (was_created_by_user) {
-            message << " (создан вами)";
+            message << " (" << _u8L("created by you") << ")";
         } else if (was_saved_by_user) {
-            message << " (сохранен вами)";
+            message << " (" << _u8L("saved by you") << ")";
         }
 
         message << "\n";
     }
 
-    message << "\nЧто делать с локальными копиями?";
+    message << "\n" << _u8L("What to do with local copies?");
 
     wxArrayString choices;
-    choices.Add("Удалить локальные копии");
-    choices.Add("Оставить локальные копии");
-    choices.Add("Спросить для каждого пресета");
+    choices.Add(_L("Delete local copies"));
+    choices.Add(_L("Keep local copies"));
+    choices.Add(_L("Ask for each preset"));
 
     wxSingleChoiceDialog dialog(this,
         wxString::FromUTF8(message.str()),
-        wxT("Удаленные пресеты"),
+        _L("Deleted presets"),
         choices);
 
     dialog.SetSelection(1); // Default to keep local
@@ -985,8 +941,8 @@ void FilamentHubPanel::delete_local_presets(const std::vector<nlohmann::json>& p
         deleted_count++;
     }
 
-    std::string message = "Удалено локальных пресетов: " + std::to_string(deleted_count);
-    show_notification("Пресеты удалены", message);
+    std::string message = _u8L("Local presets deleted: ") + std::to_string(deleted_count);
+    show_notification(_u8L("Presets deleted"), message);
 }
 
 void FilamentHubPanel::ask_for_each_deleted_preset(const std::vector<nlohmann::json>& presets)
@@ -999,15 +955,15 @@ void FilamentHubPanel::ask_for_each_deleted_preset(const std::vector<nlohmann::j
         std::string type = preset.value("type", "filament");
 
         wxString message = wxString::Format(
-            wxT("Пресет '%s' (%s) был удален на сервере.\n\n"
-                "Удалить локальную копию?"),
+            _L("Preset '%s' (%s) was deleted on the server.\n\n"
+                "Delete local copy?"),
             name.c_str(),
             type.c_str()
         );
 
         wxMessageDialog confirm(this,
             message,
-            wxT("Подтверждение удаления"),
+            _L("Confirm deletion"),
             wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
 
         if (confirm.ShowModal() == wxID_YES) {
@@ -1019,32 +975,32 @@ void FilamentHubPanel::ask_for_each_deleted_preset(const std::vector<nlohmann::j
         }
     }
 
-    std::string message = "Удалено: " + std::to_string(deleted_count) +
-                         ", Сохранено: " + std::to_string(kept_count);
-    show_notification("Обработка завершена", message);
+    std::string message = _u8L("Deleted: ") + std::to_string(deleted_count) +
+                         ", " + _u8L("Kept: ") + std::to_string(kept_count);
+    show_notification(_u8L("Processing complete"), message);
 }
 
 void FilamentHubPanel::show_sync_settings()
 {
-    wxDialog settings_dialog(this, wxID_ANY, wxT("Настройки синхронизации"),
+    wxDialog settings_dialog(this, wxID_ANY, _L("Synchronization settings"),
         wxDefaultPosition, wxSize(400, 300));
 
     wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
 
     // Auto-sync option
     wxCheckBox* auto_sync_check = new wxCheckBox(&settings_dialog, wxID_ANY,
-        wxT("Автоматическая синхронизация при запуске"));
+        _L("Auto-sync on startup"));
     sizer->Add(auto_sync_check, 0, wxALL, 10);
 
     // Conflict resolution strategy
     wxStaticText* conflict_label = new wxStaticText(&settings_dialog, wxID_ANY,
-        wxT("Стратегия разрешения конфликтов:"));
+        _L("Conflict resolution strategy:"));
     sizer->Add(conflict_label, 0, wxLEFT | wxRIGHT | wxTOP, 10);
 
     wxArrayString conflict_choices;
-    conflict_choices.Add("Всегда использовать серверную версию");
-    conflict_choices.Add("Всегда сохранять локальную версию");
-    conflict_choices.Add("Спрашивать каждый раз");
+    conflict_choices.Add(_L("Always use server version"));
+    conflict_choices.Add(_L("Always keep local version"));
+    conflict_choices.Add(_L("Ask each time"));
 
     wxChoice* conflict_choice = new wxChoice(&settings_dialog, wxID_ANY,
         wxDefaultPosition, wxDefaultSize, conflict_choices);
@@ -1053,13 +1009,13 @@ void FilamentHubPanel::show_sync_settings()
 
     // Deleted presets handling
     wxStaticText* deleted_label = new wxStaticText(&settings_dialog, wxID_ANY,
-        wxT("Обработка удаленных пресетов:"));
+        _L("Handling of deleted presets:"));
     sizer->Add(deleted_label, 0, wxLEFT | wxRIGHT | wxTOP, 10);
 
     wxArrayString deleted_choices;
-    deleted_choices.Add("Всегда удалять локальные копии");
-    deleted_choices.Add("Всегда сохранять локальные копии");
-    deleted_choices.Add("Спрашивать каждый раз");
+    deleted_choices.Add(_L("Always delete local copies"));
+    deleted_choices.Add(_L("Always keep local copies"));
+    deleted_choices.Add(_L("Ask each time"));
 
     wxChoice* deleted_choice = new wxChoice(&settings_dialog, wxID_ANY,
         wxDefaultPosition, wxDefaultSize, deleted_choices);
@@ -1068,8 +1024,8 @@ void FilamentHubPanel::show_sync_settings()
 
     // Buttons
     wxBoxSizer* button_sizer = new wxBoxSizer(wxHORIZONTAL);
-    wxButton* ok_button = new wxButton(&settings_dialog, wxID_OK, wxT("OK"));
-    wxButton* cancel_button = new wxButton(&settings_dialog, wxID_CANCEL, wxT("Отмена"));
+    wxButton* ok_button = new wxButton(&settings_dialog, wxID_OK, _L("OK"));
+    wxButton* cancel_button = new wxButton(&settings_dialog, wxID_CANCEL, _L("Cancel"));
     button_sizer->Add(ok_button, 0, wxALL, 5);
     button_sizer->Add(cancel_button, 0, wxALL, 5);
 
@@ -1113,7 +1069,7 @@ void FilamentHubPanel::save_sync_preferences(bool auto_sync, int conflict_strate
             config_file.close();
 
             wxLogMessage("Sync preferences saved");
-            show_notification("Настройки сохранены", "Настройки синхронизации успешно сохранены");
+            show_notification(_u8L("Settings saved"), _u8L("Synchronization settings saved successfully"));
         } else {
             wxLogError("Failed to save sync preferences");
         }
@@ -1154,7 +1110,7 @@ nlohmann::json FilamentHubPanel::load_sync_preferences()
 void FilamentHubPanel::show_preset_browser()
 {
     // Create a dialog to browse available presets from server
-    wxDialog browser_dialog(this, wxID_ANY, wxT("FilamentHub - Обзор пресетов"),
+    wxDialog browser_dialog(this, wxID_ANY, _L("FilamentHub - Preset Browser"),
         wxDefaultPosition, wxSize(600, 400));
 
     wxBoxSizer* main_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1162,21 +1118,21 @@ void FilamentHubPanel::show_preset_browser()
     // Filter controls
     wxBoxSizer* filter_sizer = new wxBoxSizer(wxHORIZONTAL);
 
-    wxStaticText* type_label = new wxStaticText(&browser_dialog, wxID_ANY, wxT("Тип:"));
+    wxStaticText* type_label = new wxStaticText(&browser_dialog, wxID_ANY, _L("Type:"));
     filter_sizer->Add(type_label, 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 
     wxArrayString type_choices;
-    type_choices.Add("Все");
-    type_choices.Add("Филаменты");
-    type_choices.Add("Принтеры");
-    type_choices.Add("Печать");
+    type_choices.Add(_L("All"));
+    type_choices.Add(_L("Filaments"));
+    type_choices.Add(_L("Printers"));
+    type_choices.Add(_L("Print"));
 
     wxChoice* type_filter = new wxChoice(&browser_dialog, wxID_ANY,
         wxDefaultPosition, wxDefaultSize, type_choices);
     type_filter->SetSelection(0);
     filter_sizer->Add(type_filter, 0, wxALL, 5);
 
-    wxStaticText* vendor_label = new wxStaticText(&browser_dialog, wxID_ANY, wxT("Производитель:"));
+    wxStaticText* vendor_label = new wxStaticText(&browser_dialog, wxID_ANY, _L("Vendor:"));
     filter_sizer->Add(vendor_label, 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 
     wxTextCtrl* vendor_filter = new wxTextCtrl(&browser_dialog, wxID_ANY, wxT(""));
@@ -1196,8 +1152,8 @@ void FilamentHubPanel::show_preset_browser()
     // Buttons
     wxBoxSizer* button_sizer = new wxBoxSizer(wxHORIZONTAL);
 
-    wxButton* download_button = new wxButton(&browser_dialog, wxID_ANY, wxT("Загрузить выбранный"));
-    wxButton* close_button = new wxButton(&browser_dialog, wxID_CLOSE, wxT("Закрыть"));
+    wxButton* download_button = new wxButton(&browser_dialog, wxID_ANY, _L("Download selected"));
+    wxButton* close_button = new wxButton(&browser_dialog, wxID_CLOSE, _L("Close"));
 
     button_sizer->Add(download_button, 0, wxALL, 5);
     button_sizer->Add(close_button, 0, wxALL, 5);
@@ -1213,7 +1169,7 @@ void FilamentHubPanel::show_preset_browser()
         if (selection != wxNOT_FOUND) {
             wxString preset_name = preset_list->GetString(selection);
             wxLogMessage("Would download preset: %s", preset_name);
-            show_notification("Загрузка", "Загрузка пресета: " + preset_name.ToStdString());
+            show_notification(_u8L("Downloading"), _u8L("Downloading preset: ") + preset_name.ToStdString());
             // In production, actually download and import the preset
         }
     });
@@ -1224,7 +1180,7 @@ void FilamentHubPanel::show_preset_browser()
 void FilamentHubPanel::show_sync_history()
 {
     // Show history of sync operations
-    wxDialog history_dialog(this, wxID_ANY, wxT("История синхронизации"),
+    wxDialog history_dialog(this, wxID_ANY, _L("Synchronization history"),
         wxDefaultPosition, wxSize(500, 400));
 
     wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
@@ -1234,13 +1190,13 @@ void FilamentHubPanel::show_sync_history()
     sizer->Add(history_list, 1, wxEXPAND | wxALL, 10);
 
     // In production, load from database or log file
-    history_list->Append("2024-02-06 20:00 - Синхронизация филаментов (успешно, 15 пресетов)");
-    history_list->Append("2024-02-06 19:45 - Синхронизация принтеров (успешно, 5 пресетов)");
-    history_list->Append("2024-02-06 19:30 - Полная синхронизация (ошибка: токен истек)");
-    history_list->Append("2024-02-05 18:00 - Синхронизация филаментов (успешно, 12 пресетов)");
+    history_list->Append("2024-02-06 20:00 - Filament sync (success, 15 presets)");
+    history_list->Append("2024-02-06 19:45 - Printer sync (success, 5 presets)");
+    history_list->Append("2024-02-06 19:30 - Full sync (error: token expired)");
+    history_list->Append("2024-02-05 18:00 - Filament sync (success, 12 presets)");
 
     // Close button
-    wxButton* close_button = new wxButton(&history_dialog, wxID_CLOSE, wxT("Закрыть"));
+    wxButton* close_button = new wxButton(&history_dialog, wxID_CLOSE, _L("Close"));
     sizer->Add(close_button, 0, wxALIGN_CENTER | wxALL, 10);
 
     history_dialog.SetSizer(sizer);
@@ -1252,9 +1208,9 @@ void FilamentHubPanel::export_presets_to_server()
 {
     // Upload local presets to FilamentHub server
     wxMessageDialog confirm(this,
-        wxT("Загрузить локальные пресеты на сервер FilamentHub?\n\n"
-            "Это позволит делиться ими с другими пользователями."),
-        wxT("Экспорт пресетов"),
+        _L("Upload local presets to FilamentHub server?\n\n"
+            "This will allow sharing them with other users."),
+        _L("Export presets"),
         wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
 
     if (confirm.ShowModal() != wxID_YES) {
@@ -1263,30 +1219,30 @@ void FilamentHubPanel::export_presets_to_server()
 
     // In production, scan local preset directories and upload
     wxLogMessage("Would export local presets to server");
-    show_notification("Экспорт", "Функция экспорта будет доступна в следующей версии");
+    show_notification(_u8L("Export"), _u8L("Export feature will be available in the next version"));
 }
 
 void FilamentHubPanel::check_for_updates()
 {
     // Check if there are new presets available on the server
     if (!m_auth_manager->is_logged_in()) {
-        show_notification(MSG_NOT_LOGGED_IN,
-            "Необходимо войти в систему для проверки обновлений", true);
+        show_notification(_u8L("Login required"),
+            _u8L("Login is required to check for updates"), true);
         return;
     }
 
     wxLogMessage("Checking for preset updates...");
-    show_notification("Проверка обновлений", "Поиск новых пресетов на сервере...");
+    show_notification(_u8L("Checking for updates"), _u8L("Searching for new presets on the server..."));
 
     // In production, query the server for available updates
     // For now, just show a placeholder message
     wxMessageDialog result(this,
-        wxT("Найдено 3 новых пресета:\n\n"
+        _L("Found 3 new presets:\n\n"
             "• Generic PLA Pro @System (v1.2)\n"
             "• Generic PETG CF @System (v1.0)\n"
             "• Creality Ender-3 V2 @System (v2.1)\n\n"
-            "Синхронизировать сейчас?"),
-        wxT("Доступны обновления"),
+            "Synchronize now?"),
+        _L("Updates available"),
         wxYES_NO | wxICON_INFORMATION);
 
     if (result.ShowModal() == wxID_YES) {
@@ -1301,8 +1257,8 @@ void FilamentHubPanel::validate_local_presets()
     wxLogMessage("Validating local presets...");
 
     wxProgressDialog progress(
-        wxT("Валидация пресетов"),
-        wxT("Проверка локальных пресетов..."),
+        _L("Preset validation"),
+        _L("Checking local presets..."),
         100,
         this,
         wxPD_APP_MODAL | wxPD_AUTO_HIDE | wxPD_CAN_ABORT
@@ -1310,7 +1266,7 @@ void FilamentHubPanel::validate_local_presets()
 
     // In production, iterate through local presets and validate
     for (int i = 0; i < 100; i++) {
-        if (!progress.Update(i, wxString::Format(wxT("Проверка пресета %d из 100..."), i))) {
+        if (!progress.Update(i, wxString::Format(_L("Checking preset %d of 100..."), i))) {
             // Cancelled
             break;
         }
@@ -1318,22 +1274,22 @@ void FilamentHubPanel::validate_local_presets()
         wxMilliSleep(10); // Simulate work
     }
 
-    show_notification("Валидация завершена", "Все пресеты прошли проверку");
+    show_notification(_u8L("Validation complete"), _u8L("All presets passed validation"));
 }
 
 void FilamentHubPanel::clear_sync_cache()
 {
     // Clear cached sync data
     wxMessageDialog confirm(this,
-        wxT("Очистить кэш синхронизации?\n\n"
-            "Это приведет к полной синхронизации при следующем запуске."),
-        wxT("Очистка кэша"),
+        _L("Clear sync cache?\n\n"
+            "This will cause a full synchronization on next startup."),
+        _L("Clear cache"),
         wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
 
     if (confirm.ShowModal() == wxID_YES) {
         // In production, delete sync cache files
         wxLogMessage("Clearing sync cache");
-        show_notification("Кэш очищен", "Кэш синхронизации успешно очищен");
+        show_notification(_u8L("Cache cleared"), _u8L("Sync cache cleared successfully"));
     }
 }
 
@@ -1377,20 +1333,22 @@ void FilamentHubPanel::show_debug_info()
     }
 
     // Display in dialog
-    wxDialog debug_dialog(this, wxID_ANY, wxT("Debug Information"),
+    wxDialog debug_dialog(this, wxID_ANY, _L("Debug Information"),
         wxDefaultPosition, wxSize(500, 400));
 
     wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
 
+    std::string debug_str = debug_info.str();
+
     wxTextCtrl* debug_text = new wxTextCtrl(&debug_dialog, wxID_ANY,
-        wxString::FromUTF8(debug_info.str()),
+        wxString::FromUTF8(debug_str),
         wxDefaultPosition, wxDefaultSize,
         wxTE_MULTILINE | wxTE_READONLY | wxTE_DONTWRAP);
 
     sizer->Add(debug_text, 1, wxEXPAND | wxALL, 10);
 
-    wxButton* copy_button = new wxButton(&debug_dialog, wxID_ANY, wxT("Копировать в буфер"));
-    wxButton* close_button = new wxButton(&debug_dialog, wxID_CLOSE, wxT("Закрыть"));
+    wxButton* copy_button = new wxButton(&debug_dialog, wxID_ANY, _L("Copy to clipboard"));
+    wxButton* close_button = new wxButton(&debug_dialog, wxID_CLOSE, _L("Close"));
 
     wxBoxSizer* button_sizer = new wxBoxSizer(wxHORIZONTAL);
     button_sizer->Add(copy_button, 0, wxALL, 5);
@@ -1401,9 +1359,9 @@ void FilamentHubPanel::show_debug_info()
     debug_dialog.SetSizer(sizer);
     debug_dialog.Layout();
 
-    copy_button->Bind(wxEVT_BUTTON, [debug_info](wxCommandEvent& e) {
+    copy_button->Bind(wxEVT_BUTTON, [debug_str](wxCommandEvent& e) {
         if (wxTheClipboard->Open()) {
-            wxTheClipboard->SetData(new wxTextDataObject(wxString::FromUTF8(debug_info.str())));
+            wxTheClipboard->SetData(new wxTextDataObject(wxString::FromUTF8(debug_str)));
             wxTheClipboard->Close();
             wxLogMessage("Debug info copied to clipboard");
         }
@@ -1425,8 +1383,8 @@ void FilamentHubPanel::refresh_auth_token_if_needed()
                 wxLogMessage("Token refreshed successfully");
             } else {
                 wxLogError("Failed to refresh token");
-                show_notification("Ошибка токена",
-                    "Не удалось обновить токен. Пожалуйста, войдите снова.", true);
+                show_notification(_u8L("Token error"),
+                    _u8L("Could not refresh token. Please log in again."), true);
 
                 // Force logout
                 m_auth_manager->logout();
@@ -1441,21 +1399,21 @@ void FilamentHubPanel::handle_network_error(const std::string& operation, const 
 {
     wxLogError("Network error during %s: %s", operation.c_str(), error_message.c_str());
 
-    std::string user_message = "Ошибка сети при выполнении операции: " + operation + "\n\n" +
-                              "Детали: " + error_message + "\n\n" +
-                              "Проверьте подключение к интернету и попробуйте снова.";
+    std::string user_message = _u8L("Network error during operation: ") + operation + "\n\n" +
+                              _u8L("Details: ") + error_message + "\n\n" +
+                              _u8L("Please check your internet connection and try again.");
 
-    show_notification("Ошибка сети", user_message, true);
+    show_notification(_u8L("Network error"), user_message, true);
 }
 
 void FilamentHubPanel::handle_auth_error(const std::string& error_message)
 {
     wxLogError("Authentication error: %s", error_message.c_str());
 
-    std::string user_message = "Ошибка аутентификации: " + error_message + "\n\n" +
-                              "Пожалуйста, войдите в систему снова.";
+    std::string user_message = _u8L("Authentication error: ") + error_message + "\n\n" +
+                              _u8L("Please log in again.");
 
-    show_notification("Ошибка аутентификации", user_message, true);
+    show_notification(_u8L("Authentication error"), user_message, true);
 
     // Force logout
     m_auth_manager->logout();
@@ -1471,27 +1429,27 @@ void FilamentHubPanel::handle_server_error(int status_code, const std::string& e
 
     switch (status_code) {
         case 400:
-            user_message = "Неверный запрос: " + error_message;
+            user_message = _u8L("Bad request: ") + error_message;
             break;
         case 401:
-            user_message = "Не авторизован. Пожалуйста, войдите снова.";
+            user_message = _u8L("Unauthorized. Please log in again.");
             handle_auth_error(error_message);
             return;
         case 403:
-            user_message = "Доступ запрещен: " + error_message;
+            user_message = _u8L("Access denied: ") + error_message;
             break;
         case 404:
-            user_message = "Ресурс не найден: " + error_message;
+            user_message = _u8L("Resource not found: ") + error_message;
             break;
         case 500:
-            user_message = "Внутренняя ошибка сервера. Попробуйте позже.";
+            user_message = _u8L("Internal server error. Please try again later.");
             break;
         default:
-            user_message = "Ошибка сервера (код " + std::to_string(status_code) + "): " + error_message;
+            user_message = _u8L("Server error (code ") + std::to_string(status_code) + "): " + error_message;
             break;
     }
 
-    show_notification("Ошибка сервера", user_message, true);
+    show_notification(_u8L("Server error"), user_message, true);
 }
 
 void FilamentHubPanel::log_sync_operation(const std::string& operation, bool success, const std::string& details)
@@ -1651,19 +1609,17 @@ void FilamentHubPanel::update_webview_badge(int count)
 void FilamentHubPanel::enable_webview_features()
 {
     // Enable advanced WebView features
-    #if wxUSE_WEBVIEW && defined(__WXMSW__)
     if (m_webview) {
+#ifdef __WXMSW__
         // Enable context menu for debugging (disable in production)
-        #ifdef _DEBUG
+    #ifdef _DEBUG
         m_webview->EnableContextMenu(true);
-        #else
+    #else
         m_webview->EnableContextMenu(false);
-        #endif
-
-        // Enable access to files
-        m_webview->EnableAccessToDevTools(false);
-    }
     #endif
+        m_webview->EnableAccessToDevTools(false);
+#endif
+    }
 }
 
 std::string FilamentHubPanel::format_timestamp(const std::string& iso_timestamp)
@@ -1745,11 +1701,11 @@ std::vector<std::string> FilamentHubPanel::get_available_preset_types()
 
 std::string FilamentHubPanel::preset_type_to_russian(const std::string& type)
 {
-    // Convert preset type to Russian
-    if (type == "filament") return "Филамент";
-    if (type == "printer") return "Принтер";
-    if (type == "print") return "Печать";
-    return "Неизвестно";
+    // Convert preset type to localized display name
+    if (type == "filament") return _u8L("Filament");
+    if (type == "printer") return _u8L("Printer");
+    if (type == "print") return _u8L("Print");
+    return _u8L("Unknown");
 }
 
 } // namespace GUI

@@ -8,13 +8,15 @@
 #include <wx/stattext.h>
 #include <memory>
 #include <string>
+#include <vector>
+#include "nlohmann/json.hpp"
+#include "SyncCoordinator.hpp"
 
 namespace Slic3r {
 namespace GUI {
 
 // Forward declarations
 class AuthManager;
-class SyncCoordinator;
 class PresetImporter;
 
 /**
@@ -35,7 +37,12 @@ class PresetImporter;
 class FilamentHubPanel : public wxPanel
 {
 public:
-    FilamentHubPanel(wxWindow* parent);
+    FilamentHubPanel(
+        wxWindow* parent,
+        wxWindowID id = wxID_ANY,
+        const wxPoint& pos = wxDefaultPosition,
+        const wxSize& size = wxDefaultSize
+    );
     ~FilamentHubPanel();
 
     // UI initialization

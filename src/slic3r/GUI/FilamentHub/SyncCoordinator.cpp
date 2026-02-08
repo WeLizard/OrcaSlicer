@@ -1,21 +1,14 @@
 #include "SyncCoordinator.hpp"
 #include "AuthManager.hpp"
 #include "PresetImporter.hpp"
+#include "../Jobs/Job.hpp"
+#include "slic3r/Utils/Http.hpp"
 #include <fstream>
 #include <sstream>
+#include <future>
 #include <wx/stdpaths.h>
 #include <wx/filename.h>
 #include <wx/log.h>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/version.hpp>
-#include <boost/asio/connect.hpp>
-#include <boost/asio/ip/tcp.hpp>
-
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace net = boost::asio;
-using tcp = boost::asio::ip::tcp;
 
 namespace Slic3r {
 namespace GUI {
@@ -177,9 +170,7 @@ SyncCoordinator::SyncCoordinator(
     if (!m_preset_importer) {
         throw std::invalid_argument("PresetImporter cannot be null");
     }
-    if (!m_worker) {
-        throw std::invalid_argument("BoostThreadWorker cannot be null");
-    }
+    // m_worker is optional — when nullptr, we use std::async as fallback
 }
 
 SyncCoordinator::~SyncCoordinator()
@@ -227,9 +218,24 @@ void SyncCoordinator::synchronize(
     // in this codebase. Instead, we'll use std::async as a fallback.
     auto job = std::make_shared<SyncJob>(this, type, force_full_sync, on_progress, on_complete);
 
-    // Execute async
-    std::async(std::launch::async, [this, job]() {
-        job->execute();
+    // Simple Ctl stub for async execution
+    class SimpleCtl : public Job::Ctl {
+        std::atomic<bool> m_cancelled{false};
+    public:
+        void update_status(int, const std::string&) override {}
+        bool was_canceled() const override { return m_cancelled.load(); }
+        void clear_percent() override {}
+        void show_error_info(const std::string&, int, const std::string&, const std::string&) override {}
+        std::future<void> call_on_main_thread(std::function<void()> fn) override {
+            fn();
+            return std::async(std::launch::deferred, [](){});
+        }
+    };
+
+    // Execute async (store future to avoid warning)
+    m_worker_future = std::async(std::launch::async, [this, job]() {
+        SimpleCtl ctl;
+        job->process(ctl);
         m_is_syncing = false;
     });
 }
@@ -638,10 +644,14 @@ std::string SyncCoordinator::get_device_fingerprint() const
 
         std::string fingerprint = username + "_" + hostname.ToStdString();
 
-        // Save it
+        // Save it — reload config from file since the previous stream was closed
         nlohmann::json config;
-        if (config_file.is_open()) {
-            config_file >> config;
+        {
+            std::ifstream reload_file(config_path);
+            if (reload_file.is_open()) {
+                try { reload_file >> config; } catch (...) {}
+                reload_file.close();
+            }
         }
         config["device_fingerprint"] = fingerprint;
 
@@ -663,88 +673,86 @@ std::string SyncCoordinator::get_device_fingerprint() const
     }
 }
 
-// HTTP request helper
+// HTTP request helper using OrcaSlicer Http class
 nlohmann::json SyncCoordinator::make_api_request(
     const std::string& method,
     const std::string& endpoint,
     const nlohmann::json& body)
 {
-    try {
-        std::string host = API_HOST;
-        std::string port = API_PORT;
+    std::string url = std::string("http://") + API_HOST + ":" + API_PORT + endpoint;
 
-        net::io_context ioc;
-        tcp::resolver resolver(ioc);
-        beast::tcp_stream stream(ioc);
+    nlohmann::json response_json;
+    std::string    response_body;
+    std::string    error_message;
+    unsigned       status_code = 0;
+    bool           request_done = false;
 
-        // Look up the domain name
-        auto const results = resolver.resolve(host, port);
-
-        // Make the connection
-        stream.connect(results);
-
-        // Set up the HTTP request
-        http::request<http::string_body> req;
-
-        if (method == "POST") {
-            req.method(http::verb::post);
-        } else if (method == "GET") {
-            req.method(http::verb::get);
-        } else if (method == "PUT") {
-            req.method(http::verb::put);
-        } else if (method == "DELETE") {
-            req.method(http::verb::delete_);
-        } else {
-            throw std::runtime_error("Unsupported HTTP method: " + method);
-        }
-
-        req.target(endpoint);
-        req.version(11);
-        req.set(http::field::host, host);
-        req.set(http::field::user_agent, "OrcaSlicer-FilamentHub/1.0");
-        req.set(http::field::content_type, "application/json");
+    auto configure_request = [&](Slic3r::Http& http_req) -> Slic3r::Http& {
+        http_req.header("Content-Type", "application/json")
+                .header("User-Agent", "OrcaSlicer-FilamentHub/1.0");
 
         // Add authentication header
         std::string token = m_auth_manager->get_token();
         if (!token.empty()) {
-            req.set(http::field::authorization, "Bearer " + token);
+            http_req.header("Authorization", "Bearer " + token);
         }
 
-        // Add body if present
+        // Set body for methods that support it
         if (body != nullptr && !body.is_null()) {
-            std::string body_str = body.dump();
-            req.body() = body_str;
-            req.prepare_payload();
+            http_req.set_post_body(body.dump());
         }
 
-        // Send the HTTP request
-        http::write(stream, req);
+        http_req
+            .on_complete([&](std::string resp_body, unsigned http_status) {
+                response_body = std::move(resp_body);
+                status_code = http_status;
+                request_done = true;
+            })
+            .on_error([&](std::string resp_body, std::string err, unsigned http_status) {
+                response_body = std::move(resp_body);
+                status_code = http_status;
+                error_message = std::move(err);
+                request_done = true;
+            });
 
-        // Receive the HTTP response
-        beast::flat_buffer buffer;
-        http::response<http::string_body> res;
-        http::read(stream, buffer, res);
+        return http_req;
+    };
 
-        // Gracefully close the socket
-        beast::error_code ec;
-        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
-
-        // Check response status
-        if (res.result() != http::status::ok) {
-            std::string error_msg = "HTTP request failed with status: " +
-                                   std::to_string(res.result_int());
-
-            // Try to include response body in error message
-            if (!res.body().empty()) {
-                error_msg += " - " + res.body().substr(0, 200);
-            }
-
-            throw std::runtime_error(error_msg);
+    try {
+        if (method == "POST") {
+            auto req = Slic3r::Http::post(url);
+            configure_request(req);
+            req.perform_sync();
+        } else if (method == "GET") {
+            auto req = Slic3r::Http::get(url);
+            configure_request(req);
+            req.perform_sync();
+        } else if (method == "PUT") {
+            auto req = Slic3r::Http::put(url);
+            configure_request(req);
+            req.perform_sync();
+        } else if (method == "DELETE") {
+            auto req = Slic3r::Http::del(url);
+            configure_request(req);
+            req.perform_sync();
+        } else {
+            throw std::runtime_error("Unsupported HTTP method: " + method);
         }
 
-        // Parse JSON response
-        return nlohmann::json::parse(res.body());
+        if (!error_message.empty()) {
+            std::string msg = "HTTP request failed: " + error_message;
+            if (status_code > 0)
+                msg += " (HTTP " + std::to_string(status_code) + ")";
+            if (!response_body.empty())
+                msg += " - " + response_body.substr(0, 200);
+            throw std::runtime_error(msg);
+        }
 
+        return nlohmann::json::parse(response_body);
+
+    } catch (const nlohmann::json::parse_error& e) {
+        wxLogError("FilamentHub: Failed to parse API response: %s", e.what());
+        throw std::runtime_error("Invalid JSON response from server");
     } catch (const std::exception& e) {
         wxLogError("FilamentHub: API request failed: %s", e.what());
         throw;

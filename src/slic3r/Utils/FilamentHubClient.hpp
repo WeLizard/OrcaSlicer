@@ -34,6 +34,8 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <vector>
+#include <mutex>
 #include "Http.hpp"
 
 namespace Slic3r {
@@ -56,7 +58,12 @@ class FilamentHubClient
 public:
     // Constructor
     FilamentHubClient();
-    ~FilamentHubClient() = default;
+    ~FilamentHubClient();
+
+    /**
+     * \brief Cancel all active HTTP requests
+     */
+    void cancel_all();
 
     // API base URL (configurable, defaults to localhost:8000 for development)
     static const std::string DEFAULT_API_BASE_URL;
@@ -75,7 +82,7 @@ public:
     bool test_connection(
         std::function<void(std::string /* body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Login to FilamentHub
@@ -93,7 +100,7 @@ public:
         const std::string& password,
         std::function<void(std::string /* body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Get current user info
@@ -108,7 +115,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Check if user is authenticated
@@ -151,7 +158,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* json_content */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Download preset .info file in INI format
@@ -169,7 +176,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* info_content */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Get user's presets (created + saved from catalog)
@@ -187,7 +194,7 @@ public:
         const std::string& updated_since = "",
         std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete = nullptr,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
-    ) const;
+    );
 
     /**
      * \brief Get user's printer profiles for OrcaSlicer synchronisation
@@ -205,7 +212,7 @@ public:
         const std::string& updated_since = "",
         std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete = nullptr,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
-    ) const;
+    );
 
     /**
      * \brief Get user's print profiles for OrcaSlicer synchronisation
@@ -223,7 +230,7 @@ public:
         const std::string& updated_since = "",
         std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete = nullptr,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error = nullptr
-    ) const;
+    );
 
     /**
      * \brief Download printer profile in OrcaSlicer JSON format
@@ -240,7 +247,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* json_content */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Download print profile in OrcaSlicer JSON format
@@ -257,7 +264,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* json_content */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Import printer profiles to FilamentHub
@@ -274,7 +281,7 @@ public:
         const std::string& profiles_json,
         std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Import print profiles to FilamentHub
@@ -291,7 +298,7 @@ public:
         const std::string& profiles_json,
         std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Import filament presets to FilamentHub
@@ -308,7 +315,7 @@ public:
         const std::string& presets_json,
         std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Delete preset from FilamentHub
@@ -325,7 +332,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Report deleted presets to FilamentHub
@@ -343,7 +350,7 @@ public:
         const std::string& deleted_presets_json,
         std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Get unread notifications count
@@ -358,7 +365,7 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
     /**
      * \brief Get presets statistics
@@ -373,11 +380,28 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
-    ) const;
+    );
 
 private:
+    /**
+     * \brief Store an active request to prevent premature destruction
+     *
+     * Http::perform() returns a shared_ptr. The request runs in a background thread
+     * and will be cancelled if the shared_ptr is destroyed. We store all active
+     * requests here and clean them up when callbacks fire.
+     */
+    void store_request(Http::Ptr request);
+
+    /**
+     * \brief Remove completed requests from the active list
+     */
+    void cleanup_completed_requests();
+
     std::string m_access_token;
     static std::string s_api_base_url;
+
+    std::vector<Http::Ptr> m_active_requests;
+    mutable std::mutex m_requests_mutex;
 };
 
 } // namespace Slic3r

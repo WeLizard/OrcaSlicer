@@ -22902,6 +22902,530 @@ msgstr "Пресеты FilamentHub"
 msgid "FilamentHub"
 msgstr "FilamentHub"
 
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Sync Complete"
+msgstr "Синхронизация завершена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Sync Cancelled"
+msgstr "Синхронизация отменена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Sync Failed"
+msgstr "Ошибка синхронизации"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Login Success"
+msgstr "Вход выполнен успешно"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Login Failed"
+msgstr "Ошибка входа"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Logout Success"
+msgstr "Выход выполнен"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Not Logged In"
+msgstr "Необходимо войти в систему"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Preset Downloaded"
+msgstr "Загружен пресет"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Downloading Presets"
+msgstr "Загрузка пресетов"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "You have logged out of FilamentHub"
+msgstr "Вы вышли из системы FilamentHub"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Logged in as: "
+msgstr "Авторизован: "
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Please log in to synchronize presets"
+msgstr "Пожалуйста, войдите в систему для синхронизации пресетов"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Select preset type to synchronize:"
+msgstr "Выберите тип пресетов для синхронизации:"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "FilamentHub Sync"
+msgstr "Синхронизация FilamentHub"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Filaments (Filament Profiles)"
+msgstr "Филаменты (Filament Profiles)"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Printers (Printer Profiles)"
+msgstr "Принтеры (Printer Profiles)"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Prints (Print Profiles)"
+msgstr "Печать (Print Profiles)"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "All (All Presets)"
+msgstr "Всё (All Presets)"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "filaments"
+msgstr "филаменты"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "printers"
+msgstr "принтеры"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "prints"
+msgstr "печать"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Synchronization of %s completed successfully"
+msgstr "Синхронизация %s завершена успешно"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "All presets synchronized successfully"
+msgstr "Синхронизация всех пресетов завершена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Synchronization was cancelled by user"
+msgstr "Синхронизация была отменена пользователем"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Welcome, %s"
+msgstr "Добро пожаловать, %s"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Failed to log in with provided token"
+msgstr "Не удалось выполнить вход с предоставленным токеном"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Preset Updated"
+msgstr "Пресет обновлен"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Server version applied: %s"
+msgstr "Применена серверная версия пресета: %s"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Update Failed"
+msgstr "Ошибка обновления"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Failed to apply server version: %s"
+msgstr "Не удалось применить серверную версию: %s"
+
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Local Version Kept"
+msgstr "Локальная версия сохранена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Local version of preset kept: %s"
+msgstr "Сохранена локальная версия пресета: %s"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Presets Deleted"
+msgstr "Пресеты удалены"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Local presets deleted: %d"
+msgstr "Удалено локальных пресетов: %d"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Processing Complete"
+msgstr "Обработка завершена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Deleted: %d, Kept: %d"
+msgstr "Удалено: %d, Сохранено: %d"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Settings Saved"
+msgstr "Настройки сохранены"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Sync settings saved successfully"
+msgstr "Настройки синхронизации успешно сохранены"
+
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Downloading preset: %s"
+msgstr "Загрузка пресета: %s"
+
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Export feature will be available in next version"
+msgstr "Функция экспорта будет доступна в следующей версии"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Please log in to check for updates"
+msgstr "Необходимо войти в систему для проверки обновлений"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Checking Updates"
+msgstr "Проверка обновлений"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Searching for new presets on server..."
+msgstr "Поиск новых пресетов на сервере..."
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Validation Complete"
+msgstr "Валидация завершена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "All presets validated successfully"
+msgstr "Все пресеты прошли проверку"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Cache Cleared"
+msgstr "Кэш очищен"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Sync cache cleared successfully"
+msgstr "Кэш синхронизации успешно очищен"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Token Error"
+msgstr "Ошибка токена"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Failed to refresh token. Please log in again."
+msgstr "Не удалось обновить токен. Пожалуйста, войдите снова."
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Network Error"
+msgstr "Ошибка сети"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Network error during %s. Please check your connection and try again."
+msgstr "Ошибка сети при выполнении %s. Проверьте подключение к интернету и попробуйте снова."
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Authentication Error"
+msgstr "Ошибка аутентификации"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Authentication failed during %s. Please log in again."
+msgstr "Ошибка аутентификации при выполнении %s. Пожалуйста, войдите в систему снова."
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Server Error"
+msgstr "Ошибка сервера"
+
+#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
+msgid "Server error (code %d) during %s: %s"
+msgstr "Ошибка сервера (код %d) при выполнении %s: %s"
+
 #: src/slic3r/GUI/FilamentHubPanel.cpp
-msgid "Wiki"
-msgstr "База знаний"
+msgid "Invalid preset ID: %d. Cannot import profile."
+msgstr "Неверный ID пресета: %d. Невозможно импортировать профиль."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "FilamentHub Import Error"
+msgstr "Ошибка импорта FilamentHub"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Profile %d not found."
+msgstr "Профиль %d не найден."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Server error. Please try again later."
+msgstr "Ошибка сервера. Попробуйте позже."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to download profile: %s"
+msgstr "Не удалось скачать профиль: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to create temporary file for imported profile."
+msgstr "Не удалось создать временный файл для импортируемого профиля."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Preset bundle not available"
+msgstr "Набор пресетов недоступен"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Preset bundle not available. Please try again."
+msgstr "Набор пресетов недоступен. Попробуйте снова."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Profile %d imported successfully"
+msgstr "Профиль %d успешно импортирован"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Profile %d imported successfully from FilamentHub."
+msgstr "Профиль %d успешно импортирован из FilamentHub."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "FilamentHub Import"
+msgstr "Импорт FilamentHub"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to import profile. Check log for details."
+msgstr "Не удалось импортировать профиль. Подробности в логе."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to import profile. It may already exist or be invalid."
+msgstr "Не удалось импортировать профиль. Возможно, он уже существует или повреждён."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Error importing profile: %s"
+msgstr "Ошибка при импорте профиля: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Please login to FilamentHub first."
+msgstr "Сначала войдите в FilamentHub."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "FilamentHub Sync Error"
+msgstr "Ошибка синхронизации FilamentHub"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Invalid token found. Please login again."
+msgstr "Обнаружен недействительный токен. Войдите заново."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Your session has expired. Please login again and try synchronizing again."
+msgstr "Сессия истекла. Войдите заново и повторите синхронизацию."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to validate authentication. Please try again."
+msgstr "Не удалось проверить авторизацию. Попробуйте снова."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to validate authentication: %s"
+msgstr "Не удалось проверить авторизацию: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Your session has expired. Please login again."
+msgstr "Сессия истекла. Войдите заново."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Access denied: %s"
+msgstr "Доступ запрещён: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Access denied. Please check your permissions."
+msgstr "Доступ запрещён. Проверьте ваши разрешения."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Access denied. Please check your permissions in FilamentHub settings."
+msgstr "Доступ запрещён. Проверьте разрешения в настройках FilamentHub."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to get presets list. Status: %d"
+msgstr "Не удалось получить список пресетов. Статус: %d"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "No presets to sync. All presets may have sync disabled."
+msgstr "Нет пресетов для синхронизации. Возможно, синхронизация отключена для всех пресетов."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Error parsing presets list: %s"
+msgstr "Ошибка при разборе списка пресетов: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Preset '%s' (ID: %d) was deleted in OrcaSlicer.\n\nWhat would you like to do?"
+msgstr "Пресет '%s' (ID: %d) был удалён в OrcaSlicer.\n\nЧто вы хотите сделать?"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "FilamentHub - Deleted Preset"
+msgstr "FilamentHub — Удалённый пресет"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Unexpected error: %s"
+msgstr "Непредвиденная ошибка: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Please enter a valid frontend URL (must start with http:// or https://)."
+msgstr "Введите корректный URL фронтенда (должен начинаться с http:// или https://)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Please enter a valid API base URL (must start with http:// or https://)."
+msgstr "Введите корректный базовый URL API (должен начинаться с http:// или https://)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Frontend URL"
+msgstr "URL фронтенда"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "API Base URL"
+msgstr "Базовый URL API"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "FilamentHub Settings"
+msgstr "Настройки FilamentHub"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Error parsing printer profiles list: %s"
+msgstr "Ошибка при разборе списка профилей принтеров: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Printer profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings."
+msgstr "Экспорт профилей принтеров отключён в настройках FilamentHub. Включите его в настройках профиля."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to sync printer profiles: %s"
+msgstr "Не удалось синхронизировать профили принтеров: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Error parsing print profiles list: %s"
+msgstr "Ошибка при разборе списка профилей печати: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Print profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings."
+msgstr "Экспорт профилей печати отключён в настройках FilamentHub. Включите его в настройках профиля."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to sync print profiles: %s"
+msgstr "Не удалось синхронизировать профили печати: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Please login to export filament presets to FilamentHub."
+msgstr "Войдите в систему для экспорта пресетов филаментов в FilamentHub."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to check permissions. HTTP status: %d"
+msgstr "Не удалось проверить разрешения. HTTP статус: %d"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Filament presets export is disabled in your FilamentHub settings. Please enable it in your profile settings."
+msgstr "Экспорт пресетов филаментов отключён в настройках FilamentHub. Включите его в настройках профиля."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Error parsing server response: %s"
+msgstr "Ошибка при разборе ответа сервера: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Error parsing server response: Unknown exception"
+msgstr "Ошибка при разборе ответа сервера: неизвестное исключение"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to check permissions: %s"
+msgstr "Не удалось проверить разрешения: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "No user filament presets to export."
+msgstr "Нет пользовательских пресетов филаментов для экспорта."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to export filament presets. HTTP status: %d"
+msgstr "Не удалось экспортировать пресеты филаментов. HTTP статус: %d"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Invalid response from server. Please try again."
+msgstr "Некорректный ответ сервера. Попробуйте снова."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to save preset mappings. Please try again."
+msgstr "Не удалось сохранить маппинг пресетов. Попробуйте снова."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d filament presets: %d created, %d updated."
+msgstr "Успешно экспортировано %d пресетов филаментов: %d создано, %d обновлено."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d filament presets (created)."
+msgstr "Успешно экспортировано %d пресетов филаментов (создано)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d filament presets (updated)."
+msgstr "Успешно экспортировано %d пресетов филаментов (обновлено)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Filament presets exported successfully."
+msgstr "Пресеты филаментов успешно экспортированы."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Exported %d filament presets: %d successful, %d errors."
+msgstr "Экспортировано %d пресетов филаментов: %d успешно, %d с ошибками."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to export filament presets: %s"
+msgstr "Не удалось экспортировать пресеты филаментов: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Please login to export printer profiles to FilamentHub."
+msgstr "Войдите в систему для экспорта профилей принтеров в FilamentHub."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "No user printer profiles to export."
+msgstr "Нет пользовательских профилей принтеров для экспорта."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to export printer profiles. HTTP status: %d"
+msgstr "Не удалось экспортировать профили принтеров. HTTP статус: %d"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to save profile mappings. Please try again."
+msgstr "Не удалось сохранить маппинг профилей. Попробуйте снова."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d printer profiles: %d created, %d updated."
+msgstr "Успешно экспортировано %d профилей принтеров: %d создано, %d обновлено."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d printer profiles (created)."
+msgstr "Успешно экспортировано %d профилей принтеров (создано)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d printer profiles (updated)."
+msgstr "Успешно экспортировано %d профилей принтеров (обновлено)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Printer profiles exported successfully."
+msgstr "Профили принтеров успешно экспортированы."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Exported %d printer profiles: %d successful, %d errors."
+msgstr "Экспортировано %d профилей принтеров: %d успешно, %d с ошибками."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to export printer profiles: %s"
+msgstr "Не удалось экспортировать профили принтеров: %s"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Please login to export print profiles to FilamentHub."
+msgstr "Войдите в систему для экспорта профилей печати в FilamentHub."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "No user print profiles to export."
+msgstr "Нет пользовательских профилей печати для экспорта."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to export print profiles. HTTP status: %d"
+msgstr "Не удалось экспортировать профили печати. HTTP статус: %d"
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d print profiles: %d created, %d updated."
+msgstr "Успешно экспортировано %d профилей печати: %d создано, %d обновлено."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d print profiles (created)."
+msgstr "Успешно экспортировано %d профилей печати (создано)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Successfully exported %d print profiles (updated)."
+msgstr "Успешно экспортировано %d профилей печати (обновлено)."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Print profiles exported successfully."
+msgstr "Профили печати успешно экспортированы."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Exported %d print profiles: %d successful, %d errors."
+msgstr "Экспортировано %d профилей печати: %d успешно, %d с ошибками."
+
+#: src/slic3r/GUI/FilamentHubPanel.cpp
+msgid "Failed to export print profiles: %s"
+msgstr "Не удалось экспортировать профили печати: %s"

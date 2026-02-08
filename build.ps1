@@ -178,6 +178,7 @@ function Build-Deps {
     )
 
     Write-Host "`n>>> Building Dependencies ($BuildType)..." -ForegroundColor Yellow
+    Write-Host "  Uses original build_release_vs2022.bat deps" -ForegroundColor DarkYellow
     Write-Host "  This may take 30-60 minutes on first build..." -ForegroundColor DarkYellow
     Write-Host ""
 
@@ -189,24 +190,14 @@ function Build-Deps {
 
     Set-Location $OrcaDir
 
-    $depsBuild = Join-Path $DepsDir "build"
-    if (-not (Test-Path $depsBuild)) {
-        New-Item -ItemType Directory -Path $depsBuild -Force | Out-Null
-    }
+    # Call original builder for deps only
+    $batArgs = "deps"
+    if ($BuildType -eq "Debug") { $batArgs = "deps debug" }
+    elseif ($BuildType -eq "RelWithDebInfo") { $batArgs = "deps debuginfo" }
 
-    Set-Location $depsBuild
+    Write-Host "`n  Running: build_release_vs2022.bat $batArgs" -ForegroundColor Cyan
+    & cmd /c "build_release_vs2022.bat $batArgs"
 
-    Write-Host "`n  [1/2] Running CMake configure..." -ForegroundColor Cyan
-    $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
-    & cmake ../ -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=$BuildType
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "`n  [ERROR] CMake configure failed!" -ForegroundColor Red
-        Set-Location $OrcaDir
-        return $false
-    }
-
-    Write-Host "`n  [2/2] Building deps (this takes a while)..." -ForegroundColor Cyan
-    & cmake --build . --config $BuildType --target deps -- -m
     if ($LASTEXITCODE -ne 0) {
         Write-Host "`n  [ERROR] Deps build failed!" -ForegroundColor Red
         Set-Location $OrcaDir
@@ -246,42 +237,67 @@ function Build-Slicer {
     # Always touch FilamentHub files to ensure they get recompiled
     Touch-FilamentHubFiles
 
-    if (-not (Test-Path $BuildDir)) {
-        New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
-    }
+    # Call original build_release_vs2022.bat for slicer build
+    # It handles: cmake configure + build + gettext + install
+    $batArgs = "slicer"
+    if ($BuildType -eq "Debug") { $batArgs = "slicer debug" }
+    elseif ($BuildType -eq "RelWithDebInfo") { $batArgs = "slicer debuginfo" }
 
-    Set-Location $BuildDir
+    Write-Host "`n  [1/2] Running original builder: build_release_vs2022.bat $batArgs" -ForegroundColor Cyan
+    & cmd /c "build_release_vs2022.bat $batArgs"
 
-    Write-Host "`n  [1/3] Running CMake configure..." -ForegroundColor Cyan
-    $env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
-
-    $sigFlag = ""
-    if ($env:ORCA_UPDATER_SIG_KEY) {
-        $sigFlag = "-DORCA_UPDATER_SIG_KEY=$env:ORCA_UPDATER_SIG_KEY"
-    }
-
-    & cmake .. -G "Visual Studio 17 2022" -A x64 -DORCA_TOOLS=ON $sigFlag -DCMAKE_BUILD_TYPE=$BuildType
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "`n  [ERROR] CMake configure failed!" -ForegroundColor Red
-        Set-Location $OrcaDir
-        return $false
-    }
-
-    Write-Host "`n  [2/3] Building slicer..." -ForegroundColor Cyan
-    & cmake --build . --config $BuildType --target ALL_BUILD -- -m
     if ($LASTEXITCODE -ne 0) {
         Write-Host "`n  [ERROR] Build failed!" -ForegroundColor Red
         Set-Location $OrcaDir
         return $false
     }
 
-    Write-Host "`n  [3/3] Running gettext and install..." -ForegroundColor Cyan
-    Set-Location $OrcaDir
-    & cmd /c "scripts\run_gettext.bat" 2>$null
-    Set-Location $BuildDir
-    & cmake --build . --target install --config $BuildType
+    # Determine build output directory name
+    $buildDirName = "build"
+    if ($BuildType -eq "Debug") { $buildDirName = "build-dbg" }
+    elseif ($BuildType -eq "RelWithDebInfo") { $buildDirName = "build-dbginfo" }
+    $actualBuildDir = Join-Path $OrcaDir $buildDirName
+
+    # Copy runtime DLLs to install directory (original .bat doesn't do this)
+    Write-Host "`n  [2/2] Copying runtime DLLs to install directory..." -ForegroundColor Cyan
+    $installDir = Join-Path $actualBuildDir "OrcaSlicer"
+    $srcBinDir = Join-Path $actualBuildDir "src\$BuildType"
+
+    if ((Test-Path $installDir) -and (Test-Path $srcBinDir)) {
+        $dllsCopied = 0
+        Get-ChildItem -Path $srcBinDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            $destFile = Join-Path $installDir $_.Name
+            if (-not (Test-Path $destFile)) {
+                Copy-Item $_.FullName $installDir -Force
+                $dllsCopied++
+            }
+        }
+
+        # Also copy resources if missing in install dir
+        $srcResources = Join-Path $srcBinDir "resources"
+        $destResources = Join-Path $installDir "resources"
+        if ((Test-Path $srcResources) -and -not (Test-Path $destResources)) {
+            Copy-Item $srcResources $destResources -Recurse -Force
+            Write-Host "    Copied resources directory" -ForegroundColor DarkGray
+        }
+
+        if ($dllsCopied -gt 0) {
+            Write-Host "    Copied $dllsCopied DLL(s) to install directory" -ForegroundColor Green
+        } else {
+            Write-Host "    All DLLs already present" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "    [WARNING] Could not find directories:" -ForegroundColor Yellow
+        if (-not (Test-Path $srcBinDir)) {
+            Write-Host "    Missing: $srcBinDir" -ForegroundColor DarkGray
+        }
+        if (-not (Test-Path $installDir)) {
+            Write-Host "    Missing: $installDir" -ForegroundColor DarkGray
+        }
+    }
 
     Write-Host "`n  [OK] Slicer built successfully!" -ForegroundColor Green
+    Write-Host "  Run: $installDir\orca-slicer.exe" -ForegroundColor Cyan
     Set-Location $OrcaDir
     return $true
 }
@@ -358,6 +374,7 @@ function Create-PortableZip {
 
 function Build-FullWindows {
     Write-Host "`n>>> Full Build Windows (deps + slicer)..." -ForegroundColor Yellow
+    Write-Host "  Uses original build_release_vs2022.bat (no args = deps + slicer)" -ForegroundColor DarkGray
     Write-Host ""
 
     $confirm = Read-Host "Continue? This will take 30-60 min (y/n)"
@@ -366,17 +383,43 @@ function Build-FullWindows {
         return
     }
 
-    # Build deps first
-    Write-Host "`n=== Step 1/2: Building Dependencies ===" -ForegroundColor Cyan
-    $result = Build-Deps -BuildType "Release"
-    if (-not $result) {
-        Write-Host "`n  [ERROR] Deps build failed! Cannot continue." -ForegroundColor Red
+    Set-Location $OrcaDir
+
+    # Touch FilamentHub files to force recompile
+    Touch-FilamentHubFiles
+
+    # Call original builder without args = builds deps + slicer + install
+    Write-Host "`n  Running: build_release_vs2022.bat (full build)" -ForegroundColor Cyan
+    & cmd /c "build_release_vs2022.bat"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "`n  [ERROR] Full build failed!" -ForegroundColor Red
+        Set-Location $OrcaDir
         return
     }
 
-    # Build slicer
-    Write-Host "`n=== Step 2/2: Building Slicer ===" -ForegroundColor Cyan
-    Build-Slicer -BuildType "Release" -SkipDepsCheck
+    # Copy DLLs to install directory
+    $installDir = Join-Path $BuildDir "OrcaSlicer"
+    $srcBinDir = Join-Path $BuildDir "src\Release"
+
+    if ((Test-Path $installDir) -and (Test-Path $srcBinDir)) {
+        Write-Host "`n  Copying runtime DLLs to install directory..." -ForegroundColor Cyan
+        $dllsCopied = 0
+        Get-ChildItem -Path $srcBinDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+            $destFile = Join-Path $installDir $_.Name
+            if (-not (Test-Path $destFile)) {
+                Copy-Item $_.FullName $installDir -Force
+                $dllsCopied++
+            }
+        }
+        if ($dllsCopied -gt 0) {
+            Write-Host "    Copied $dllsCopied DLL(s)" -ForegroundColor Green
+        }
+    }
+
+    Write-Host "`n  [OK] Full build complete!" -ForegroundColor Green
+    Write-Host "  Run: $installDir\orca-slicer.exe" -ForegroundColor Cyan
+    Set-Location $OrcaDir
 }
 
 function Build-AllWindows {

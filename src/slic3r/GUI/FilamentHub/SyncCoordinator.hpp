@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <future>
 #include "nlohmann/json.hpp"
 
 namespace Slic3r {
@@ -48,6 +49,8 @@ struct SyncPlan {
  */
 class SyncCoordinator
 {
+    friend class SyncJob;
+
 public:
     /**
      * @brief Progress callback: (progress_percent, status_message) -> void
@@ -123,6 +126,8 @@ private:
     std::string get_api_endpoint(const std::string& path) const;
     int get_current_sync_version(PresetType type) const;
     void update_sync_version(PresetType type, int version);
+    std::string get_device_fingerprint() const;
+    std::string get_config_file_path() const;
 
     // HTTP request helper
     nlohmann::json make_api_request(
@@ -141,6 +146,7 @@ private:
     bool m_cancel_requested;
     PresetType m_current_sync_type;
     int m_current_progress;
+    std::future<void> m_worker_future;
 };
 
 } // namespace GUI

@@ -82,9 +82,14 @@ static nlohmann::json get_config_json(const DynamicPrintConfig& config) {
     for (const std::string &opt_key : config.keys()) {
         const ConfigOption *opt = config.option(opt_key);
         if (opt->is_scalar()) {
-            if (opt->type() == coString)
-                j[opt_key] = (dynamic_cast<const ConfigOptionString *>(opt))->value;
-            else
+            if (opt->type() == coString) {
+                // CRASH-2 fix: проверяем результат dynamic_cast перед разыменованием
+                const ConfigOptionString* str_opt = dynamic_cast<const ConfigOptionString *>(opt);
+                if (str_opt != nullptr)
+                    j[opt_key] = str_opt->value;
+                else
+                    j[opt_key] = opt->serialize();
+            } else
                 j[opt_key] = opt->serialize();
         } else {
             const ConfigOptionVectorBase *vec = static_cast<const ConfigOptionVectorBase *>(opt);
@@ -363,7 +368,8 @@ void FilamentHubPanel::reload()
 
 bool FilamentHubPanel::Show(bool show)
 {
-    if (show && !m_url_deferred.empty()) {
+    // CRASH-3 fix: проверяем m_browser перед использованием
+    if (show && !m_url_deferred.empty() && m_browser != nullptr) {
         WebView::LoadUrl(m_browser, m_url_deferred);
         m_url_deferred.clear();
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Loading deferred URL";
@@ -379,7 +385,13 @@ void FilamentHubPanel::OnError(wxWebViewEvent& evt)
 void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: WebView loaded: " << evt.GetURL().ToUTF8();
-    
+
+    // CRASH-3 fix: проверяем m_browser перед любым использованием
+    if (m_browser == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: OnLoaded called but m_browser is null";
+        return;
+    }
+
     // Попробуем добавить script message handler еще раз (если не получилось при инициализации)
     // Но не логируем как ошибку, если уже добавлен - это нормально
     bool handler_added = m_browser->AddScriptMessageHandler("wx");
@@ -2222,9 +2234,11 @@ bool FilamentHubPanel::delete_preset_from_filamenthub(int preset_id, const std::
         }
     );
     
-    // Ждем ответа (с таймаутом)
+    // CRASH-1 fix: таймаут снижен с 30s до 10s.
+    // ВАЖНО: эта функция должна вызываться ТОЛЬКО из фонового потока (не из UI-потока),
+    // иначе блокирующее ожидание заморозит интерфейс OrcaSlicer.
     std::unique_lock<std::mutex> lock(mtx);
-    if (!cv.wait_for(lock, std::chrono::seconds(30), [&] { return completed; })) {
+    if (!cv.wait_for(lock, std::chrono::seconds(10), [&] { return completed; })) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: Timeout waiting for delete preset " << preset_id << " response";
         return false;
     }

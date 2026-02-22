@@ -47,6 +47,7 @@
 #include <wx/textctrl.h>
 #include <wx/menu.h>
 // #include <wx/flexgrid.h> // Removed - wxFlexGridSizer should be available from other includes
+#include <regex>
 #include <nlohmann/json.hpp>
 #include <boost/beast/core/detail/base64.hpp>
 #include <algorithm>
@@ -100,6 +101,7 @@ static nlohmann::json get_config_json(const DynamicPrintConfig& config) {
 const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "https://filamenthub.ru";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";
 const std::string FilamentHubPanel::CONFIG_KEY_ACCESS_TOKEN = "access_token";
+const std::string FilamentHubPanel::CONFIG_KEY_REFRESH_TOKEN = "refresh_token";
 const std::string FilamentHubPanel::CONFIG_KEY_USER_ID = "user_id";
 const std::string FilamentHubPanel::CONFIG_KEY_LAST_SYNC_TIME = "last_sync_time";
 const std::string FilamentHubPanel::CONFIG_KEY_PRESET_MAPPING = "preset_mapping";
@@ -410,12 +412,13 @@ void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
                     window.wx.postMessage(message);
                 }
             },
-            sendLoginSuccess: function(accessToken, userId) {
-                const message = JSON.stringify({ 
-                    command: 'login_success', 
-                    data: { 
+            sendLoginSuccess: function(accessToken, userId, refreshToken) {
+                const message = JSON.stringify({
+                    command: 'login_success',
+                    data: {
                         access_token: accessToken,
-                        user_id: userId
+                        user_id: userId,
+                        refresh_token: refreshToken || null
                     }
                 });
                 if (window.wx && window.wx.postMessage) {
@@ -517,14 +520,14 @@ void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
             exportPrintProfiles: function() {
                 return new Promise(function(resolve, reject) {
                     const sequenceId = 'export_print_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                    
+
                     // Отправляем команду в C++
                     const message = JSON.stringify({
                         command: 'export_print_profiles',
                         sequence_id: sequenceId,
                         data: {}
                     });
-                    
+
                     // Регистрируем обработчик ответа
                     const handleResponse = function(event) {
                         try {
@@ -541,9 +544,49 @@ void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
                             // Игнорируем сообщения, которые не являются ответами
                         }
                     };
-                    
+
                     window.addEventListener('message', handleResponse);
-                    
+
+                    // Отправляем сообщение через postMessage
+                    if (window.wx && window.wx.postMessage) {
+                        window.wx.postMessage(message);
+                    } else {
+                        window.removeEventListener('message', handleResponse);
+                        reject(new Error('OrcaSlicer API not available'));
+                    }
+                });
+            },
+            // Экспорт всех профилей (filament, printer, print) из OrcaSlicer в FilamentHub
+            exportAllProfiles: function() {
+                return new Promise(function(resolve, reject) {
+                    const sequenceId = 'export_all_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+                    // Отправляем команду в C++
+                    const message = JSON.stringify({
+                        command: 'export_all_profiles',
+                        sequence_id: sequenceId,
+                        data: {}
+                    });
+
+                    // Регистрируем обработчик ответа
+                    const handleResponse = function(event) {
+                        try {
+                            const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                            if (data.command === 'export_all_profiles' && data.sequence_id === sequenceId) {
+                                window.removeEventListener('message', handleResponse);
+                                if (data.status === 'success') {
+                                    resolve({ message: data.message || '' });
+                                } else {
+                                    reject(new Error(data.message || 'Export failed'));
+                                }
+                            }
+                        } catch (e) {
+                            // Игнорируем сообщения, которые не являются ответами
+                        }
+                    };
+
+                    window.addEventListener('message', handleResponse);
+
                     // Отправляем сообщение через postMessage
                     if (window.wx && window.wx.postMessage) {
                         window.wx.postMessage(message);
@@ -570,24 +613,115 @@ void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
             }
         });
         
-        // Monitor localStorage for token changes (when user logs in/out)
-        let lastToken = localStorage.getItem('access_token');
-        const tokenCheckInterval = setInterval(() => {
-            const currentToken = localStorage.getItem('access_token');
-            const currentUserId = localStorage.getItem('user_id'); // Frontend should store user_id too
-            
-            if (currentToken !== lastToken) {
-                lastToken = currentToken;
-                if (currentToken && window.filamenthub && window.filamenthub.sendLoginSuccess) {
-                    window.filamenthub.sendLoginSuccess(currentToken, currentUserId ? parseInt(currentUserId) : null);
+        // Monitor localStorage for token changes (when user logs in/out via frontend)
+        // Задержка 2 сек — чтобы C++ успел инжектировать токен и polling не сработал ложно
+        let lastToken = null;
+        setTimeout(() => {
+            lastToken = localStorage.getItem('access_token');
+            setInterval(() => {
+                const currentToken = localStorage.getItem('access_token');
+                const currentUserId = localStorage.getItem('user_id');
+                const currentRefreshToken = localStorage.getItem('refresh_token');
+
+                if (currentToken !== lastToken) {
+                    lastToken = currentToken;
+                    if (currentToken && window.filamenthub && window.filamenthub.sendLoginSuccess) {
+                        window.filamenthub.sendLoginSuccess(currentToken, currentUserId ? parseInt(currentUserId) : null, currentRefreshToken);
+                    } else if (!currentToken && window.wx && window.wx.postMessage) {
+                        // Токен удалён — уведомляем C++ о logout
+                        window.wx.postMessage(JSON.stringify({ command: 'logout' }));
+                    }
                 }
-            }
-        }, 1000); // Check every second
+            }, 1000);
+        }, 2000); // Задержка 2 сек после загрузки
         
         console.log('FilamentHub API initialized');
     )";
     
     WebView::RunScript(m_browser, js_api);
+
+    // Инжекция токена из AppConfig в localStorage при каждой загрузке страницы
+    // Это решает проблему рассинхрона: C++ — единственный владелец токена,
+    // при reload/навигации фронтенд получает актуальный токен из AppConfig
+    std::string access_token;
+    int user_id = 0;
+    if (load_auth_token(access_token, user_id)) {
+        // Загружаем refresh_token из AppConfig
+        std::string refresh_token;
+        if (wxGetApp().app_config != nullptr) {
+            refresh_token = wxGetApp().app_config->get(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN);
+        }
+
+        // Инжектируем access_token, refresh_token, user_id в localStorage
+        // SEC-1 fix: используем JSON.parse() вместо строковой подстановки для защиты от XSS
+        nlohmann::json auth_data;
+        auth_data["token"] = access_token;
+        auth_data["refreshToken"] = refresh_token;
+        auth_data["userId"] = user_id;
+        wxString auth_json_wx = wxString::FromUTF8(auth_data.dump().c_str());
+        wxString inject_js = wxString(R"(
+            (function() {
+                try {
+                    var data = JSON.parse(')") + auth_json_wx.Clone() + wxString(R"(');
+                    if (data.token) {
+                        localStorage.setItem('access_token', data.token);
+                        if (data.refreshToken) {
+                            localStorage.setItem('refresh_token', data.refreshToken);
+                        }
+                        if (data.userId > 0) {
+                            localStorage.setItem('user_id', data.userId.toString());
+                        }
+                        console.log('FilamentHub: Token injected from C++ (userId=' + data.userId + ')');
+                    }
+                } catch (e) {
+                    console.error('FilamentHub: Failed to parse auth data:', e);
+                }
+            })();
+        )");
+        WebView::RunScript(m_browser, inject_js);
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Injected auth token into WebView localStorage (user_id=" << user_id << ")";
+    } else {
+        // Нет токена в AppConfig — очищаем localStorage (если пользователь вышел из C++)
+        wxString clear_js = R"(
+            (function() {
+                localStorage.removeItem('access_token');
+                localStorage.removeItem('refresh_token');
+                localStorage.removeItem('user_id');
+                console.log('FilamentHub: Cleared auth tokens (no token in C++)');
+            })();
+        )";
+        WebView::RunScript(m_browser, clear_js);
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: No token in AppConfig, cleared WebView localStorage";
+    }
+}
+
+void FilamentHubPanel::process_login_success(const std::string& access_token, const std::string& refresh_token, int user_id)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Login success received. User ID: " << user_id;
+
+    // Save auth token to AppConfig
+    save_auth_token(access_token, user_id);
+
+    // Save refresh token
+    if (!refresh_token.empty()) {
+        CallAfter([this, refresh_token]() {
+            if (wxGetApp().app_config != nullptr) {
+                wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, refresh_token);
+                wxGetApp().app_config->save();
+            }
+        });
+    }
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Token saved. User ID: " << user_id << ", token length: " << access_token.length();
+
+    // Update UI to show logged-in state
+    CallAfter([this]() {
+        update_user_info();
+        // Автоматически синхронизируем пресеты после логина
+        if (!m_is_syncing) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-syncing presets after login...";
+            synchronize_presets(true); // force_full_sync = true для первого раза
+        }
+    });
 }
 
 void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
@@ -623,7 +757,13 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
         } else if (command == "login_success") {
             // User logged in successfully via WebView
             std::string access_token = j["data"]["access_token"].get<std::string>();
-            
+
+            // Сохраняем refresh_token если передан
+            std::string refresh_token;
+            if (j["data"].contains("refresh_token") && !j["data"]["refresh_token"].is_null()) {
+                refresh_token = j["data"]["refresh_token"].get<std::string>();
+            }
+
             // user_id может быть null в JSON
             int user_id = 0;
             if (!j["data"]["user_id"].is_null()) {
@@ -633,26 +773,11 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
                 m_fhub_client->set_api_base_url(m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url);
                 m_fhub_client->get_current_user(
                     access_token,
-                    [this, access_token](std::string json_body, unsigned http_status) {
+                    [this, access_token, refresh_token](std::string json_body, unsigned http_status) {
                         try {
                             nlohmann::json user_json = nlohmann::json::parse(json_body);
                             int user_id = user_json["id"].get<int>();
-
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Login success received. User ID: " << user_id;
-
-                            // Save auth token to AppConfig
-                            save_auth_token(access_token, user_id);
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Token saved. User ID: " << user_id << ", token length: " << access_token.length();
-
-                            // Update UI to show logged-in state
-                            CallAfter([this]() {
-                                update_user_info();
-                                // Автоматически синхронизируем пресеты после логина
-                                if (!m_is_syncing) {
-                                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-syncing presets after login...";
-                                    synchronize_presets(true); // force_full_sync = true для первого раза
-                                }
-                            });
+                            process_login_success(access_token, refresh_token, user_id);
                         } catch (const std::exception& e) {
                             BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error getting user ID: " << e.what();
                         }
@@ -664,21 +789,7 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
                 return; // Exit early, will update UI in callback
             }
 
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Login success received. User ID: " << user_id;
-
-            // Save auth token to AppConfig
-            save_auth_token(access_token, user_id);
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Token saved. User ID: " << user_id << ", token length: " << access_token.length();
-
-            // Update UI to show logged-in state
-            CallAfter([this]() {
-                update_user_info();
-                // Автоматически синхронизируем пресеты после логина (с guard от двойного вызова)
-                if (!m_is_syncing) {
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-syncing presets after login...";
-                    synchronize_presets(true); // force_full_sync = true для первого раза
-                }
-            });
+            process_login_success(access_token, refresh_token, user_id);
         } else if (command == "export_filament_presets") {
             // User wants to export filament presets from OrcaSlicer to FilamentHub
             static int cmd_counter = 0;
@@ -720,6 +831,32 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
 
             // Отправляем немедленный ответ, что команда получена
             send_response("export_print_profiles", "success", "", sequence_id);
+        } else if (command == "export_all_profiles") {
+            // User wants to export all profiles (filament, printer, print) from OrcaSlicer to FilamentHub
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Export all profiles command received from Frontend";
+
+            // Вызываем export_profiles_to_filamenthub асинхронно
+            // Результат будет отправлен через show_notification_in_webview
+            CallAfter([this]() {
+                export_profiles_to_filamenthub();
+            });
+
+            // Отправляем немедленный ответ, что команда получена
+            send_response("export_all_profiles", "success", "", sequence_id);
+        } else if (command == "logout") {
+            // Frontend сообщает о logout (401 без refresh, или refresh failed)
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Logout command received from Frontend (token expired/revoked)";
+            CallAfter([this]() {
+                // Очищаем все токены в AppConfig
+                if (wxGetApp().app_config != nullptr) {
+                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, "");
+                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, "");
+                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, "");
+                    wxGetApp().app_config->save();
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Cleared all auth tokens from AppConfig (frontend logout)";
+                }
+                update_user_info();
+            });
         } else {
             BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Unknown command: " << command.ToUTF8();
             send_response(command, "error", "Unknown command", sequence_id);
@@ -904,21 +1041,19 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false") 
                             << ", m_full_sync_attempted=" << (m_full_sync_attempted ? "true" : "false");
     
-    // ВАЖНО: Проверяем, не идет ли уже синхронизация ПЕРЕД установкой флага
-    // Это предотвращает повторный запуск синхронизации
-    if (m_is_syncing) {
+    // Атомарный check-and-set: предотвращает race condition при одновременных вызовах
+    if (m_is_syncing.exchange(true)) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Sync already in progress, skipping";
         return;
     }
-    
+
     // Сбрасываем флаг защиты от зацикливания при новом запуске синхронизации
     if (force_full_sync) {
-        m_full_sync_attempted = false;
+        m_full_sync_attempted.store(false);
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 1.1] Reset m_full_sync_attempted=false for full sync";
     }
-    
-    // Устанавливаем флаг синхронизации и обновляем UI
-    m_is_syncing = true;
+
+    // m_is_syncing уже true (установлен выше через exchange)
     // ВАЖНО: НЕ увеличиваем m_active_syncs здесь - он будет увеличен только после успешного получения списка (200 OK)
     // Это предотвращает проблемы с зависанием кнопки при ошибках
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 2] Set m_is_syncing=true";
@@ -1217,9 +1352,31 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                         m_is_syncing = false;
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
                         // Синхронизируем printer и print profiles (второстепенные, после основного - filament presets)
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Starting printer and print profiles sync after empty filament presets sync...";
-                        synchronize_printer_profiles(false); // Incremental sync
-                        synchronize_print_profiles(false); // Incremental sync
+                        // Проверяем разрешения пользователя перед sync (TODO 9)
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles sync (after empty filament presets)...";
+                        std::string token;
+                        int uid = 0;
+                        if (load_auth_token(token, uid)) {
+                            check_user_permissions(token,
+                                [this](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                                    CallAfter([this, printer_export, print_export]() {
+                                        if (printer_export) {
+                                            synchronize_printer_profiles(false);
+                                        } else {
+                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping printer profiles sync (disabled in user settings)";
+                                        }
+                                        if (print_export) {
+                                            synchronize_print_profiles(false);
+                                        } else {
+                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping print profiles sync (disabled in user settings)";
+                                        }
+                                    });
+                                },
+                                [](std::string error, unsigned status) {
+                                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print sync: " << error;
+                                }
+                            );
+                        }
                         // Скрываем прогресс-бар
                         if (m_sync_progress) {
                             m_sync_progress->Hide();
@@ -1554,13 +1711,13 @@ void FilamentHubPanel::send_response(const wxString& command, const wxString& st
     // Используем тот же подход, что и для уведомлений - напрямую вставляем JSON в JavaScript код
     std::string response_json = response.dump();
     
-    // Отправляем через window.postMessage (JSON объект напрямую)
-    // nlohmann::json::dump() возвращает валидный UTF-8 JSON
+    // SEC-2 fix: используем JSON.parse() вместо прямой конкатенации JSON в JS код
+    // nlohmann::json::dump() экранирует спецсимволы, безопасно для вставки в JS строку
     wxString json_wx = wxString::FromUTF8(response_json.c_str());
     wxString js_response = wxString(R"(
             (function() {
                 try {
-                    var response = )") + json_wx + wxString(R"(;
+                    var response = JSON.parse(')") + json_wx + wxString(R"(');
                     window.postMessage(response, '*');
                 } catch (e) {
                     console.error('FilamentHub: Error sending response:', e);
@@ -1592,13 +1749,13 @@ void FilamentHubPanel::show_notification_in_webview(const wxString& message, con
     
     // Send notification to frontend via JavaScript
     // Frontend should have a function to show notifications (e.g., toast)
-    // ВАЖНО: nlohmann::json::dump() возвращает UTF-8, на Windows wxString::Format("%s") ожидает
-    // кодировку текущей локали, поэтому используем wxString::FromUTF8 для корректной конвертации
+    // SEC-2 fix: используем JSON.parse() вместо прямой конкатенации JSON в JS код
+    // nlohmann::json::dump() возвращает валидный UTF-8, безопасно для вставки в JS строку
     wxString json_wx = wxString::FromUTF8(notification.dump().c_str());
     wxString js_code = wxString(R"(
             (function() {
                 try {
-                    var notification = )") + json_wx + wxString(R"(;
+                    var notification = JSON.parse(')") + json_wx + wxString(R"(');
                     // Try to call frontend notification function
                     if (window.filamenthub && typeof window.filamenthub.showNotification === 'function') {
                         window.filamenthub.showNotification(notification.message, notification.type);
@@ -1696,6 +1853,7 @@ bool FilamentHubPanel::load_auth_token(std::string& access_token, int& user_id)
             BOOST_LOG_TRIVIAL(warning) << "FilamentHub: user_id_str contains non-digit characters: '" << user_id_str << "', clearing corrupted data";
             // Очищаем повреждённые данные из AppConfig
             wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, "");
+            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, "");
             wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, "");
             CallAfter([]() {
                 if (wxGetApp().app_config != nullptr)
@@ -2865,10 +3023,31 @@ void FilamentHubPanel::process_preset_import_queue()
             update_unread_notifications_count();
             
             // Синхронизируем printer и print profiles (второстепенные, после основного - filament presets)
-            // Выполняем асинхронно, без блокировки UI
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Starting printer and print profiles sync after filament presets...";
-            synchronize_printer_profiles(false); // Incremental sync
-            synchronize_print_profiles(false); // Incremental sync
+            // Проверяем разрешения пользователя перед sync (TODO 9)
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles sync (after filament presets)...";
+            std::string token;
+            int uid = 0;
+            if (load_auth_token(token, uid)) {
+                check_user_permissions(token,
+                    [this](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                        CallAfter([this, printer_export, print_export]() {
+                            if (printer_export) {
+                                synchronize_printer_profiles(false);
+                            } else {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping printer profiles sync (disabled in user settings)";
+                            }
+                            if (print_export) {
+                                synchronize_print_profiles(false);
+                            } else {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping print profiles sync (disabled in user settings)";
+                            }
+                        });
+                    },
+                    [](std::string error, unsigned status) {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print sync: " << error;
+                    }
+                );
+            }
         });
         return;
     }
@@ -3263,31 +3442,44 @@ void FilamentHubPanel::navigate_without_reload(const wxString& path)
 {
     // Используем JavaScript для навигации через React Router без перезагрузки страницы
     // Это быстрее и сохраняет состояние React приложения
-    
+
     if (m_browser == nullptr) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot navigate - WebView is null";
         return;
     }
-    
-    wxString js_code = wxString::Format(R"(
+
+    // SEC-3 fix: валидируем path — только безопасные символы для URL-пути
+    std::string path_str = path.ToUTF8().data();
+    static const std::regex valid_path_re("^/[a-zA-Z0-9/_\\-\\.\\?=&#%]*$");
+    if (!std::regex_match(path_str, valid_path_re)) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Invalid navigation path rejected: " << path_str;
+        return;
+    }
+
+    // Передаём path через JSON.parse() для безопасности
+    nlohmann::json nav_data;
+    nav_data["path"] = path_str;
+    wxString nav_json_wx = wxString::FromUTF8(nav_data.dump().c_str());
+    wxString js_code = wxString(R"(
         (function() {
+            var data = JSON.parse(')") + nav_json_wx + wxString(R"(');
+            var path = data.path;
             // Используем глобальную функцию navigate из window.filamenthub
             if (window.filamenthub && typeof window.filamenthub.navigate === 'function') {
-                window.filamenthub.navigate('%s');
+                window.filamenthub.navigate(path);
                 return true;
             }
-            
+
             // Fallback: используем window.history.pushState (может не работать с React Router)
-            // Но лучше использовать navigate из React Router
             console.warn('FilamentHub: window.filamenthub.navigate not found, using history.pushState');
-            window.history.pushState({}, '', '%s');
-            
+            window.history.pushState({}, '', path);
+
             // Создаём событие popstate для обновления React Router
             window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
-            
+
             return false;
         })();
-    )", path.c_str(), path.c_str());
+    )");
     
     WebView::RunScript(m_browser, js_code);
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Navigating to " << path.ToUTF8() << " without page reload";
@@ -3302,9 +3494,10 @@ void FilamentHubPanel::show_login()
 
 void FilamentHubPanel::logout()
 {
-    // Clear auth token from AppConfig
+    // Clear all auth tokens from AppConfig
     if (wxGetApp().app_config != nullptr) {
         wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, "");
+        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, "");
         wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, "");
         CallAfter([]() {
             if (wxGetApp().app_config != nullptr)
@@ -3646,7 +3839,7 @@ void FilamentHubPanel::hide_sync_progress()
 
 void FilamentHubPanel::check_user_permissions(
     const std::string& access_token,
-    std::function<void(bool, bool, bool, bool)> on_complete,
+    std::function<void(bool, bool, bool, bool, bool)> on_complete,
     std::function<void(std::string, unsigned)> on_error
 )
 {
@@ -3687,18 +3880,20 @@ void FilamentHubPanel::check_user_permissions(
                 nlohmann::json user_json = nlohmann::json::parse(json_body);
                 
                 // Извлекаем разрешения (по умолчанию true, если не указано)
+                bool allow_filament_import = user_json.value("allow_filament_presets_import", true);
                 bool allow_printer_import = user_json.value("allow_printer_profiles_import", true);
                 bool allow_printer_export = user_json.value("allow_printer_profiles_export", true);
                 bool allow_print_import = user_json.value("allow_print_profiles_import", true);
                 bool allow_print_export = user_json.value("allow_print_profiles_export", true);
-                
+
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: User permissions extracted - "
-                                       << "printer_import: " << (allow_printer_import ? "true" : "false")
+                                       << "filament_import: " << (allow_filament_import ? "true" : "false")
+                                       << ", printer_import: " << (allow_printer_import ? "true" : "false")
                                        << ", printer_export: " << (allow_printer_export ? "true" : "false")
                                        << ", print_import: " << (allow_print_import ? "true" : "false")
                                        << ", print_export: " << (allow_print_export ? "true" : "false");
-                
-                on_complete(allow_printer_import, allow_printer_export, allow_print_import, allow_print_export);
+
+                on_complete(allow_filament_import, allow_printer_import, allow_printer_export, allow_print_import, allow_print_export);
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what() 
                                         << ", JSON body: " << json_body.substr(0, 500);
@@ -4614,9 +4809,9 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub()
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub() CALLED (call #" << call_counter << ") ==========";
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false");
     
-    // ВАЖНО: Проверяем, не идет ли уже экспорт (используем тот же флаг, что и для синхронизации)
-    if (m_is_syncing) {
-        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [EXPORT SKIP] Export already in progress (m_is_syncing=true), skipping duplicate call #" << call_counter;
+    // Атомарный check-and-set: если уже true — кто-то экспортирует, выходим
+    if (m_is_syncing.exchange(true)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [EXPORT SKIP] Export already in progress, skipping duplicate call #" << call_counter;
         return;
     }
     
@@ -4625,6 +4820,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub()
     int user_id;
     if (!load_auth_token(access_token, user_id)) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export filament presets";
+        m_is_syncing.store(false);
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Please login to export filament presets to FilamentHub."),
@@ -4633,11 +4829,12 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub()
         });
         return;
     }
-    
+
     // Проверяем PresetBundle
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export filament presets";
+        m_is_syncing.store(false);
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -4744,9 +4941,9 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub_internal() CALLED ==========";
     
-    // Устанавливаем флаг экспорта (используем тот же флаг, что и для синхронизации)
-    m_is_syncing = true;
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Set m_is_syncing=true for export";
+    // m_is_syncing уже установлен вызывающей функцией (exchange или прямая установка)
+    m_is_syncing.store(true);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Confirmed m_is_syncing=true for export";
     
     // Проверяем PresetBundle
     PresetBundle* bundle = wxGetApp().preset_bundle;
@@ -5156,9 +5353,9 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_printer_profiles_to_filamenthub() CALLED ==========";
 
-    // Проверяем, не идет ли уже экспорт/синхронизация
-    if (m_is_syncing) {
-        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress (m_is_syncing=true), skipping printer profiles export";
+    // Атомарный check-and-set: если уже true — кто-то экспортирует, выходим
+    if (m_is_syncing.exchange(true)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress, skipping printer profiles export";
         return;
     }
 
@@ -5167,6 +5364,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
     int user_id;
     if (!load_auth_token(access_token, user_id)) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export printer profiles";
+        m_is_syncing.store(false);
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Please login to export printer profiles to FilamentHub."),
@@ -5175,11 +5373,12 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
         });
         return;
     }
-    
+
     // Проверяем PresetBundle
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export printer profiles";
+        m_is_syncing.store(false);
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -5764,9 +5963,9 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub()
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_print_profiles_to_filamenthub() CALLED ==========";
 
-    // Проверяем, не идет ли уже экспорт/синхронизация
-    if (m_is_syncing) {
-        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress (m_is_syncing=true), skipping print profiles export";
+    // Атомарный check-and-set: если уже true — кто-то экспортирует, выходим
+    if (m_is_syncing.exchange(true)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress, skipping print profiles export";
         return;
     }
 
@@ -5775,6 +5974,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub()
     int user_id;
     if (!load_auth_token(access_token, user_id)) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export print profiles";
+        m_is_syncing.store(false);
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Please login to export print profiles to FilamentHub."),
@@ -5783,11 +5983,12 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub()
         });
         return;
     }
-    
+
     // Проверяем PresetBundle
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export print profiles";
+        m_is_syncing.store(false);
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -6319,6 +6520,113 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                     error_msg,
                     http_status == 401 || http_status == 403 ? "warning" : "error"
                 );
+            });
+        }
+    );
+}
+
+// ============================================================================
+// Unified export of all profile types to FilamentHub
+// ============================================================================
+
+void FilamentHubPanel::export_profiles_to_filamenthub()
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_profiles_to_filamenthub() CALLED ==========";
+
+    // Атомарный check-and-set: если уже true — кто-то экспортирует/синхронизирует, выходим
+    if (m_is_syncing.exchange(true)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress, skipping";
+        return;
+    }
+
+    // Проверяем авторизацию
+    std::string access_token;
+    int user_id;
+    if (!load_auth_token(access_token, user_id)) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Not authenticated, cannot export profiles";
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Please login to export profiles to FilamentHub."),
+                "warning"
+            );
+        });
+        return;
+    }
+
+    // Проверяем PresetBundle
+    PresetBundle* bundle = wxGetApp().preset_bundle;
+    if (bundle == nullptr) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export profiles";
+        m_is_syncing.store(false);
+        CallAfter([this]() {
+            show_notification_in_webview(
+                _L("Preset bundle not available. Please try again."),
+                "error"
+            );
+        });
+        return;
+    }
+
+    // Один вызов check_user_permissions — получаем все 5 флагов
+    std::string api_base_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+
+    check_user_permissions(access_token,
+        [this, access_token, api_base_url](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+            CallAfter([this, access_token, api_base_url, filament_import, printer_import, print_import]() {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - filament_import=" << (filament_import ? "true" : "false")
+                                       << ", printer_import=" << (printer_import ? "true" : "false")
+                                       << ", print_import=" << (print_import ? "true" : "false");
+
+                int export_count = 0;
+
+                if (filament_import) {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - exporting filament presets";
+                    export_filament_presets_to_filamenthub_internal(access_token, api_base_url);
+                    export_count++;
+                } else {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - filament presets export disabled in user settings";
+                }
+
+                if (printer_import) {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - exporting printer profiles";
+                    export_printer_profiles_to_filamenthub_internal(access_token, api_base_url);
+                    export_count++;
+                } else {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - printer profiles export disabled in user settings";
+                }
+
+                if (print_import) {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - exporting print profiles";
+                    export_print_profiles_to_filamenthub_internal(access_token, api_base_url);
+                    export_count++;
+                } else {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unified export - print profiles export disabled in user settings";
+                }
+
+                if (export_count == 0) {
+                    m_is_syncing.store(false);
+                    show_notification_in_webview(
+                        _L("All profile exports are disabled in your FilamentHub settings. Please enable them in your profile settings."),
+                        "warning"
+                    );
+                }
+            });
+        },
+        [this](std::string error, unsigned http_status) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to check permissions for unified export. Error: " << error;
+            m_is_syncing.store(false);
+            CallAfter([this, error, http_status]() {
+                if (http_status == 401) {
+                    show_notification_in_webview(
+                        _L("Your session has expired. Please login again."),
+                        "warning"
+                    );
+                } else {
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to check permissions: %s"), wxString::FromUTF8(error.c_str())),
+                        "error"
+                    );
+                }
             });
         }
     );

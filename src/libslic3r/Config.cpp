@@ -902,6 +902,12 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
                 key_values.emplace(BBL_JSON_KEY_INHERITS, it.value());
             } else if (boost::iequals(it.key(), ORCA_JSON_KEY_RENAMED_FROM)) {
                 key_values.emplace(ORCA_JSON_KEY_RENAMED_FROM, it.value());
+            } else if (boost::iequals(it.key(), "fhub_source")) {
+                // EXPORT-1 fix: сохраняем fhub_source в key_values для распознавания FilamentHub пресетов
+                key_values.emplace("fhub_source", it.value());
+            } else if (boost::iequals(it.key(), "fhub_id")) {
+                // EXPORT-1 fix: сохраняем fhub_id в key_values для идентификации FilamentHub пресетов
+                key_values.emplace("fhub_id", it.value());
             } else {
                 t_config_option_key opt_key = it.key();
                 std::string value_str;

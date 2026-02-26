@@ -2,9 +2,9 @@
 
 This fork of OrcaSlicer includes modifications to integrate FilamentHub functionality and fix Windows build issues.
 
-**License:** AGPL-3.0 (same as original OrcaSlicer)  
-**Source:** https://github.com/lizardjazz1/OrcaSlicer  
-**Branch:** filamenthub-integration  
+**License:** AGPL-3.0 (same as original OrcaSlicer)
+**Source:** https://github.com/WeLizard/OrcaSlicer
+**Branch:** filamenthub-integration
 **Original:** https://github.com/SoftFever/OrcaSlicer
 
 ---
@@ -116,9 +116,9 @@ All modifications comply with AGPL-3.0 license requirements:
 ## Contact
 
 For questions about FilamentHub modifications:
-- **Repository:** https://github.com/lizardjazz1/OrcaSlicer
+- **Repository:** https://github.com/WeLizard/OrcaSlicer
 - **Original Project:** https://github.com/SoftFever/OrcaSlicer
-- **FilamentHub Project:** https://github.com/lizardjazz1/FilamentHub
+- **FilamentHub Project:** https://github.com/WeLizard/FilamentHub
 
 ---
 

@@ -294,9 +294,9 @@ set(PREFIX_PATH_CHECK ${CMAKE_PREFIX_PATH})
 # Modifications:
 # - Added explicit OpenCV_RUNTIME and OpenCV_ARCH detection for Windows/MSVC
 # - Fixed OCCT DLL path resolution for multiple VC runtime versions
-# 
+#
 # Licensed under AGPL-3.0 (same as original OrcaSlicer)
-# Source: https://github.com/lizardjazz1/OrcaSlicer
+# Source: https://github.com/WeLizard/OrcaSlicer
 # Branch: filamenthub-integration
 # =============================================================================
 

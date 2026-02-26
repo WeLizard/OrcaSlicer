@@ -23,7 +23,7 @@
  * Original copyright (C) SoftFever/OrcaSlicer.
  *
  * Licensed under AGPL-3.0 (same as original OrcaSlicer)
- * Source: https://github.com/lizardjazz1/OrcaSlicer
+ * Source: https://github.com/WeLizard/OrcaSlicer
  * Branch: filamenthub-integration
  * =============================================================================
  */

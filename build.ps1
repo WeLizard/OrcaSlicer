@@ -575,7 +575,7 @@ function Create-GitHubRelease {
     foreach ($f in $files) {
         Write-Host "    $f" -ForegroundColor White
     }
-    Start-Process "https://github.com/lizardjazz1/OrcaSlicer/releases/new?tag=$tagName"
+    Start-Process "https://github.com/WeLizard/OrcaSlicer/releases/new?tag=$tagName"
     Write-Host "`n  [INFO] Complete the release in browser" -ForegroundColor Yellow
 }
 

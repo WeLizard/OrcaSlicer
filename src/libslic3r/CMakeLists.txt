@@ -507,9 +507,9 @@ find_package(CGAL REQUIRED)
 # - Added explicit OpenCV_RUNTIME and OpenCV_ARCH detection
 # - Added manual OpenCV_DIR path resolution
 # - Added fallback to direct library search if find_package fails
-# 
+#
 # Licensed under AGPL-3.0 (same as original OrcaSlicer)
-# Source: https://github.com/lizardjazz1/OrcaSlicer
+# Source: https://github.com/WeLizard/OrcaSlicer
 # Branch: filamenthub-integration
 # =============================================================================
 

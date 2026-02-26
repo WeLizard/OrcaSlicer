@@ -21,9 +21,9 @@
  * 
  * New file for FilamentHub tab integration.
  * Original copyright (C) SoftFever/OrcaSlicer.
- * 
+ *
  * Licensed under AGPL-3.0 (same as original OrcaSlicer)
- * Source: https://github.com/lizardjazz1/OrcaSlicer
+ * Source: https://github.com/WeLizard/OrcaSlicer
  * Branch: filamenthub-integration
  * =============================================================================
  */
@@ -43,6 +43,7 @@
 #include "Widgets/Button.hpp"
 #include <future>
 #include <functional>
+#include <atomic>
 #include <mutex>
 #include <vector>
 #include <memory>
@@ -230,6 +231,9 @@ private:
      */
     void export_filament_presets_to_filamenthub();
 
+    /** Reset m_is_syncing when export finishes (handles unified export counter). */
+    void finish_export_operation();
+
     /**
      * \brief Export printer profiles to FilamentHub
      * 
@@ -255,6 +259,13 @@ private:
      * Checks user permissions before exporting.
      */
     void export_print_profiles_to_filamenthub();
+
+    /**
+     * \brief Unified export of all profile types (filament, printer, print) to FilamentHub
+     *
+     * Checks permissions once and exports all enabled profile types.
+     */
+    void export_profiles_to_filamenthub();
 
 private:
     /**
@@ -283,6 +294,8 @@ private:
     /**
      * \brief Save access token and user_id to AppConfig
      */
+    void process_login_success(const std::string& access_token, const std::string& refresh_token, int user_id);
+
     void save_auth_token(const std::string& access_token, int user_id);
     
     /**
@@ -365,9 +378,25 @@ private:
     std::string load_print_profile_mapping(int profile_id);
     
     /**
+     * \brief Scoped sync timestamp type for incremental sync cursors
+     *
+     * We keep independent cursors for filament/printer/print sync, while
+     * preserving backward compatibility with legacy single-key cursor.
+     */
+    enum class SyncTimestampType {
+        Filament,
+        Printer,
+        Print
+    };
+
+    /**
      * \brief Save last sync time to AppConfig
      */
-    void save_last_sync_time(int user_id, const std::string& timestamp);
+    void save_last_sync_time(
+        int user_id,
+        const std::string& timestamp,
+        SyncTimestampType sync_type = SyncTimestampType::Filament
+    );
     
     /**
      * \brief Load last sync time from AppConfig
@@ -375,7 +404,10 @@ private:
      * \param user_id User ID
      * \return Last sync timestamp (ISO 8601) or empty string if not found
      */
-    std::string load_last_sync_time(int user_id);
+    std::string load_last_sync_time(
+        int user_id,
+        SyncTimestampType sync_type = SyncTimestampType::Filament
+    );
     
     /**
      * \brief Add [FilamentHub] postfix to preset name if not already present
@@ -490,7 +522,7 @@ private:
      */
     void check_user_permissions(
         const std::string& access_token,
-        std::function<void(bool, bool, bool, bool)> on_complete,
+        std::function<void(bool, bool, bool, bool, bool)> on_complete,
         std::function<void(std::string, unsigned)> on_error
     );
 
@@ -568,9 +600,10 @@ private:
     wxStaticText* m_notifications_badge { nullptr }; // Badge showing unread notifications count
     Button* m_admin_button { nullptr }; // Admin panel button (only if admin)
     Button* m_refresh_button { nullptr }; // Refresh/Reload button
-    bool m_is_syncing { false }; // Is sync in progress
-    int m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)
-    bool m_full_sync_attempted { false }; // Защита от зацикливания: была ли попытка полной синхронизации
+    std::atomic<bool> m_is_syncing { false }; // Is sync in progress (atomic for thread safety)
+    std::atomic<int> m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)
+    std::atomic<int> m_active_exports { 0 }; // Number of active export operations in unified export
+    std::atomic<bool> m_full_sync_attempted { false }; // Защита от зацикливания: была ли попытка полной синхронизации
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     int m_unread_notifications_count { 0 }; // Unread notifications count
@@ -596,6 +629,7 @@ private:
     static const std::string CONFIG_SECTION_FILAMENTHUB;
     static const std::string CONFIG_KEY_ACCESS_TOKEN;
     static const std::string CONFIG_KEY_USER_ID;
+    static const std::string CONFIG_KEY_REFRESH_TOKEN;
     static const std::string CONFIG_KEY_LAST_SYNC_TIME;
     static const std::string CONFIG_KEY_PRESET_MAPPING;
     static const std::string CONFIG_KEY_PRINTER_PROFILE_MAPPING;
@@ -641,4 +675,3 @@ private:
 }} // namespace Slic3r::GUI
 
 #endif // __FILAMENTHUB_PANEL_HPP__
-

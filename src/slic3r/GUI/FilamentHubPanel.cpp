@@ -1050,8 +1050,8 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== [SYNC START] synchronize_presets() CALLED (call #" << sync_call_counter << ") ==========";
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 1] force_full_sync=" << (force_full_sync ? "true" : "false");
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false") 
-                            << ", m_full_sync_attempted=" << (m_full_sync_attempted ? "true" : "false");
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false")
+                            << ", m_full_sync_attempted=" << (m_full_sync_attempted.load() ? "true" : "false");
     
     // Атомарный check-and-set: предотвращает race condition при одновременных вызовах
     if (m_is_syncing.exchange(true)) {
@@ -1308,11 +1308,11 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 // это может означать, что пресеты были удалены локально, но не обновлялись в FilamentHub
                 // В этом случае делаем полную синхронизацию, чтобы восстановить все пресеты
                 // КРИТИЧНО: Защита от зацикливания - проверяем флаг m_full_sync_attempted
-                if (presets.empty() && !force_full_sync && !updated_since.empty() && !m_full_sync_attempted) {
+                if (presets.empty() && !force_full_sync && !updated_since.empty() && !m_full_sync_attempted.load()) {
                     BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] API returned empty list, but last_sync_time exists. "
                                                << "This might indicate locally deleted presets. Performing full sync to restore all presets...";
                     // Устанавливаем флаг защиты от зацикливания
-                    m_full_sync_attempted = true;
+                    m_full_sync_attempted.store(true);
                     // Очищаем last_sync_time и делаем полную синхронизацию
                     save_last_sync_time(user_id, "", SyncTimestampType::Filament); // Очищаем last_sync_time
                     // Уменьшаем счетчик (он был увеличен выше после 200 OK)
@@ -1333,7 +1333,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                         synchronize_presets(true); // Полная синхронизация (без updated_since)
                     });
                     return;
-                } else if (presets.empty() && !force_full_sync && !updated_since.empty() && m_full_sync_attempted) {
+                } else if (presets.empty() && !force_full_sync && !updated_since.empty() && m_full_sync_attempted.load()) {
                     // Уже пытались полную синхронизацию - не зацикливаемся
                     BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] Full sync already attempted, skipping to prevent infinite loop";
                     // Уменьшаем счетчик
@@ -3057,7 +3057,7 @@ void FilamentHubPanel::process_preset_import_queue()
             }
             
             // Сбрасываем флаг защиты от зацикливания после успешной синхронизации
-            m_full_sync_attempted = false;
+            m_full_sync_attempted.store(false);
             
             m_active_syncs--;
             m_is_syncing.store(false);

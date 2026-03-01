@@ -1173,35 +1173,43 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
             
             // Проверяем статус ответа
             if (http_status == 401) {
-                // Токен истек или невалидный - НЕ вызываем logout() автоматически, НЕ перезагружаем страницу
-                // Как в BambuLab: показываем ошибку и оставляем токен сохраненным, позволяя пользователю повторить попытку
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired or invalid (401) during presets sync";
-                // ВАЖНО: m_active_syncs не увеличивался до этого момента (увеличивается только после 200 OK)
-                // Поэтому НЕ уменьшаем счетчик здесь
+                // Токен истек — НЕ показываем сообщение сразу.
+                // Фронтенд автоматически рефрешит токен через refresh_token.
+                // Делаем тихий retry через 2 секунды. Сообщение — только если retry тоже 401.
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_complete, "
+                                           << "waiting for frontend auto-refresh before retry...";
                 CallAfter([this]() {
                     m_is_syncing.store(false);
-                    // Скрываем прогресс-бар
                     if (m_sync_progress) {
                         m_sync_progress->Hide();
                     }
                     if (m_sync_status_label) {
                         m_sync_status_label->Hide();
                     }
-                    // НЕ вызываем logout() - оставляем пользователя залогиненным (как в BambuLab)
-                    // НЕ перезагружаем страницу - оставляем текущую страницу (как в BambuLab)
-                    // Токен остается сохраненным, пользователь может повторить попытку синхронизации после повторной авторизации
                     update_sync_button_state(false);
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
                     if (m_active_syncs < 0) {
                         m_active_syncs = 0;
                     }
                     m_info_panel->Layout();
-                    // Показываем уведомление в WebView (как в BambuLab - просто показываем ошибку)
-                    show_notification_in_webview(
-                        _L("Your session has expired. Please login again and try synchronizing again."),
-                        "warning"
-                    );
-                    // НЕ перезагружаем страницу - пусть пользователь сам решает, хочет ли он войти заново
+                    if (!m_sync_retry_attempted.load()) {
+                        m_sync_retry_attempted.store(true);
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scheduling silent sync retry in 2 seconds...";
+                        std::thread([this]() {
+                            std::this_thread::sleep_for(std::chrono::seconds(2));
+                            CallAfter([this]() {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Executing silent sync retry after token refresh wait...";
+                                synchronize_presets(false);
+                            });
+                        }).detach();
+                    } else {
+                        m_sync_retry_attempted.store(false);
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Retry also failed (401). Showing session expired message.";
+                        show_notification_in_webview(
+                            _L("Your session has expired. Please login again."),
+                            "warning"
+                        );
+                    }
                 });
                 return;
             }
@@ -1293,6 +1301,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
             // Это предотвращает проблемы с зависанием кнопки при ошибках (401, 403, etc.)
             // Счетчик был установлен в synchronize_presets, но там он не увеличивался (исправлено выше)
             m_active_syncs++;
+            m_sync_retry_attempted.store(false); // Reset retry flag on success
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 9.2] Incremented m_active_syncs for filament presets (after 200 OK). Active syncs: " << m_active_syncs;
             
             try {
@@ -1638,26 +1647,48 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
             // Поэтому НЕ уменьшаем счетчик здесь - он остаётся 0
             
             if (http_status == 401) {
-                error_msg = _L("Your session has expired. Please login again.");
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_error callback";
-                CallAfter([this, error_msg]() {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_error callback, "
+                                           << "waiting for frontend auto-refresh before retry...";
+                // НЕ вызываем logout() — даём фронтенду время на авто-рефреш токена.
+                // Фронтенд (client.ts interceptor) при 401 автоматически использует refresh_token,
+                // получает новый access_token и сохраняет в localStorage.
+                // C++ polling (inject_auth_tokens_to_webview) подхватит новый токен.
+                // Показываем сообщение только если повторная попытка тоже провалится.
+                CallAfter([this]() {
                     m_is_syncing.store(false);
-                    // Скрываем прогресс-бар
                     if (m_sync_progress) {
                         m_sync_progress->Hide();
                     }
                     if (m_sync_status_label) {
                         m_sync_status_label->Hide();
                     }
-                    logout(); // Очищает токен и обновляет UI
                     update_sync_button_state(false);
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
                     if (m_active_syncs < 0) {
                         m_active_syncs = 0;
                     }
                     m_info_panel->Layout();
-                    // Показываем уведомление в WebView вместо модального окна
-                    show_notification_in_webview(error_msg, "warning");
+                    // Тихо ждём 2 секунды, чтобы фронтенд успел рефрешнуть токен,
+                    // затем пробуем синхронизацию повторно
+                    if (!m_sync_retry_attempted.load()) {
+                        m_sync_retry_attempted.store(true);
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scheduling silent sync retry in 2 seconds...";
+                        std::thread([this]() {
+                            std::this_thread::sleep_for(std::chrono::seconds(2));
+                            CallAfter([this]() {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Executing silent sync retry after token refresh wait...";
+                                synchronize_presets(false);
+                            });
+                        }).detach();
+                    } else {
+                        // Повторная попытка уже была — показываем сообщение
+                        m_sync_retry_attempted.store(false);
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Retry also failed (401). Showing session expired message.";
+                        show_notification_in_webview(
+                            _L("Your session has expired. Please login again."),
+                            "warning"
+                        );
+                    }
                 });
                 return;
             }

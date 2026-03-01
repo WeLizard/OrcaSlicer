@@ -604,6 +604,7 @@ private:
     std::atomic<int> m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)
     std::atomic<int> m_active_exports { 0 }; // Number of active export operations in unified export
     std::atomic<bool> m_full_sync_attempted { false }; // Защита от зацикливания: была ли попытка полной синхронизации
+    std::atomic<bool> m_sync_retry_attempted { false }; // Silent retry after 401 (wait for frontend token refresh)
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     int m_unread_notifications_count { 0 }; // Unread notifications count

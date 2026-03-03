@@ -1372,29 +1372,36 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                         m_active_syncs--;
                         m_is_syncing.store(false);
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
-                        // Синхронизируем printer и print profiles (второстепенные, после основного - filament presets)
-                        // Проверяем разрешения пользователя перед sync (TODO 9)
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles sync (after empty filament presets)...";
+                        // Экспортируем printer и print profiles на сервер (после завершения sync filament presets)
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles export (after empty filament presets)...";
                         std::string token;
                         int uid = 0;
                         if (load_auth_token(token, uid)) {
                             check_user_permissions(token,
-                                [this](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
-                                    CallAfter([this, printer_export, print_export]() {
-                                        if (printer_export) {
-                                            synchronize_printer_profiles(false);
-                                        } else {
-                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping printer profiles sync (disabled in user settings)";
+                                [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                                    CallAfter([this, token, printer_import, print_import]() {
+                                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                                        int export_count = 0;
+                                        if (printer_import) export_count++;
+                                        if (print_import) export_count++;
+                                        if (export_count == 0) {
+                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping printer/print profiles export (disabled in user settings)";
+                                            return;
                                         }
-                                        if (print_export) {
-                                            synchronize_print_profiles(false);
-                                        } else {
-                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping print profiles sync (disabled in user settings)";
+                                        m_is_syncing.store(true);
+                                        m_active_exports.store(export_count);
+                                        if (printer_import) {
+                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-exporting printer profiles to FilamentHub";
+                                            export_printer_profiles_to_filamenthub_internal(token, api_url);
+                                        }
+                                        if (print_import) {
+                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-exporting print profiles to FilamentHub";
+                                            export_print_profiles_to_filamenthub_internal(token, api_url);
                                         }
                                     });
                                 },
                                 [](std::string error, unsigned status) {
-                                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print sync: " << error;
+                                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
                                 }
                             );
                         }
@@ -3115,29 +3122,36 @@ void FilamentHubPanel::process_preset_import_queue()
             // (так как после синхронизации могут появиться новые уведомления)
             update_unread_notifications_count();
             
-            // Синхронизируем printer и print profiles (второстепенные, после основного - filament presets)
-            // Проверяем разрешения пользователя перед sync (TODO 9)
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles sync (after filament presets)...";
+            // Экспортируем printer и print profiles на сервер (после завершения sync filament presets)
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles export (after filament presets)...";
             std::string token;
             int uid = 0;
             if (load_auth_token(token, uid)) {
                 check_user_permissions(token,
-                    [this](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
-                        CallAfter([this, printer_export, print_export]() {
-                            if (printer_export) {
-                                synchronize_printer_profiles(false);
-                            } else {
-                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping printer profiles sync (disabled in user settings)";
+                    [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                        CallAfter([this, token, printer_import, print_import]() {
+                            std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                            int export_count = 0;
+                            if (printer_import) export_count++;
+                            if (print_import) export_count++;
+                            if (export_count == 0) {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping printer/print profiles export (disabled in user settings)";
+                                return;
                             }
-                            if (print_export) {
-                                synchronize_print_profiles(false);
-                            } else {
-                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping print profiles sync (disabled in user settings)";
+                            m_is_syncing.store(true);
+                            m_active_exports.store(export_count);
+                            if (printer_import) {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-exporting printer profiles to FilamentHub";
+                                export_printer_profiles_to_filamenthub_internal(token, api_url);
+                            }
+                            if (print_import) {
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-exporting print profiles to FilamentHub";
+                                export_print_profiles_to_filamenthub_internal(token, api_url);
                             }
                         });
                     },
                     [](std::string error, unsigned status) {
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print sync: " << error;
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
                     }
                 );
             }
@@ -5090,7 +5104,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export filament presets";
-        m_is_syncing.store(false); // Сбрасываем флаг при ошибке
+        finish_export_operation(); // Сбрасываем флаг при ошибке
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -5322,7 +5336,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
             if (http_status != 200) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
                                         << " when importing filament presets";
-                m_is_syncing.store(false);
+                finish_export_operation();
                 CallAfter([this, http_status]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Failed to export filament presets. HTTP status: %d"), http_status),
@@ -5338,7 +5352,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
 
                 if (!response.contains("results")) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     CallAfter([this]() {
                         show_notification_in_webview(
                             _L("Invalid response from server. Please try again."),
@@ -5352,7 +5366,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                 AppConfig* app_config = wxGetApp().app_config;
                 if (app_config == nullptr) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     CallAfter([this]() {
                         show_notification_in_webview(
                             _L("Failed to save preset mappings. Please try again."),
@@ -5441,7 +5455,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         show_notification_in_webview(message, "warning");
                     }
                     // Сбрасываем флаг после завершения экспорта
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] Reset m_is_syncing=false after notification #" << notification_counter;
                 });
             } catch (const std::exception& e) {
@@ -5453,7 +5467,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         "error"
                     );
                     // Сбрасываем флаг после ошибки парсинга
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export parse error";
                 });
             }
@@ -5482,7 +5496,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                     http_status == 401 || http_status == 403 ? "warning" : "error"
                 );
                 // Сбрасываем флаг после ошибки экспорта
-                m_is_syncing.store(false);
+                finish_export_operation();
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export error";
             });
         }
@@ -5976,7 +5990,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
             if (http_status != 200) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
                                         << " when importing printer profiles";
-                m_is_syncing.store(false);
+                finish_export_operation();
                 CallAfter([this, http_status]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Failed to export printer profiles. HTTP status: %d"), http_status),
@@ -5991,7 +6005,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
 
                 if (!response.contains("results")) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     CallAfter([this]() {
                         show_notification_in_webview(
                             _L("Invalid response from server. Please try again."),
@@ -6004,7 +6018,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                 AppConfig* app_config = wxGetApp().app_config;
                 if (app_config == nullptr) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     CallAfter([this]() {
                         show_notification_in_webview(
                             _L("Failed to save profile mappings. Please try again."),
@@ -6084,12 +6098,12 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                                                   success_count + error_count, success_count, error_count);
                         show_notification_in_webview(message, "warning");
                     }
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                 });
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what()
                                         << ", Response: " << response_body.substr(0, 500);
-                m_is_syncing.store(false);
+                finish_export_operation();
                 CallAfter([this, e]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
@@ -6115,7 +6129,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                 error_msg = wxString::Format(_L("Failed to export printer profiles: %s"), wxString::FromUTF8(error.c_str()));
             }
 
-            m_is_syncing.store(false);
+            finish_export_operation();
             CallAfter([this, error_msg, http_status]() {
                 show_notification_in_webview(
                     error_msg,
@@ -6555,7 +6569,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
             if (http_status != 200) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
                                         << " when importing print profiles";
-                m_is_syncing.store(false);
+                finish_export_operation();
                 CallAfter([this, http_status]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Failed to export print profiles. HTTP status: %d"), http_status),
@@ -6570,7 +6584,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
 
                 if (!response.contains("results")) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     CallAfter([this]() {
                         show_notification_in_webview(
                             _L("Invalid response from server. Please try again."),
@@ -6583,7 +6597,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                 AppConfig* app_config = wxGetApp().app_config;
                 if (app_config == nullptr) {
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                     CallAfter([this]() {
                         show_notification_in_webview(
                             _L("Failed to save profile mappings. Please try again."),
@@ -6663,12 +6677,12 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                                                   success_count + error_count, success_count, error_count);
                         show_notification_in_webview(message, "warning");
                     }
-                    m_is_syncing.store(false);
+                    finish_export_operation();
                 });
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what()
                                         << ", Response: " << response_body.substr(0, 500);
-                m_is_syncing.store(false);
+                finish_export_operation();
                 CallAfter([this, e]() {
                     show_notification_in_webview(
                         wxString::Format(_L("Error parsing server response: %s"), e.what()),
@@ -6694,7 +6708,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                 error_msg = wxString::Format(_L("Failed to export print profiles: %s"), wxString::FromUTF8(error.c_str()));
             }
 
-            m_is_syncing.store(false);
+            finish_export_operation();
             CallAfter([this, error_msg, http_status]() {
                 show_notification_in_webview(
                     error_msg,

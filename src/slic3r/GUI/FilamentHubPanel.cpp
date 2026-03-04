@@ -5581,9 +5581,10 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
             try {
                 nlohmann::json user_json = nlohmann::json::parse(json_body);
                 bool allow_printer_import = user_json.value("allow_printer_profiles_import", true);
+                bool allow_print_import = user_json.value("allow_print_profiles_import", true);
 
-                if (!allow_printer_import) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Printer profiles import is disabled in user settings";
+                if (!allow_printer_import && !allow_print_import) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Both printer and print profiles export disabled in user settings";
                     m_is_syncing.store(false);
                     CallAfter([this]() {
                         show_notification_in_webview(
@@ -5594,9 +5595,23 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
                     return;
                 }
 
-                // Разрешение получено - продолжаем экспорт
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Permission check passed, proceeding with printer profiles export";
-                export_printer_profiles_to_filamenthub_internal(access_token, api_base_url);
+                // Count how many exports to run (printer + print)
+                int export_count = 0;
+                if (allow_printer_import) export_count++;
+                if (allow_print_import) export_count++;
+                m_active_exports.store(export_count);
+
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Permission check passed, exporting profiles (printer="
+                                       << (allow_printer_import ? "yes" : "no") << ", print="
+                                       << (allow_print_import ? "yes" : "no") << ")";
+
+                if (allow_printer_import) {
+                    export_printer_profiles_to_filamenthub_internal(access_token, api_base_url);
+                }
+                if (allow_print_import) {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Also exporting print profiles (chained with printer profiles)";
+                    export_print_profiles_to_filamenthub_internal(access_token, api_base_url);
+                }
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing user info JSON: " << e.what();
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response body (first 500 chars): " << json_body.substr(0, std::min<size_t>(500, json_body.length()));

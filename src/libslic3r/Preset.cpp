@@ -577,6 +577,14 @@ void Preset::save(DynamicPrintConfig* parent_config)
 
     boost::filesystem::create_directories(fs::path(this->file).parent_path());
 
+    // FilamentHub: build extra key-values to persist in JSON
+    std::map<std::string, std::string> fhub_extra;
+    if (this->is_filamenthub && !this->fhub_source.empty()) {
+        fhub_extra["fhub_source"] = this->fhub_source;
+        if (this->fhub_id > 0)
+            fhub_extra["fhub_id"] = std::to_string(this->fhub_id);
+    }
+
     //BBS: only save difference if it has parent
     if (parent_config) {
         DynamicPrintConfig temp_config;
@@ -615,14 +623,15 @@ void Preset::save(DynamicPrintConfig* parent_config)
                     opt_dst->set(opt_src);
             }
         }
-        temp_config.save_to_json(this->file, this->name, from_str, this->version.to_string());
+        temp_config.save_to_json(this->file, this->name, from_str, this->version.to_string(), fhub_extra);
     } else if (!filament_id.empty() && inherits().empty()) {
         DynamicPrintConfig temp_config = config;
         temp_config.set_key_value(BBL_JSON_KEY_FILAMENT_ID, new ConfigOptionString(filament_id));
-        temp_config.save_to_json(this->file, this->name, from_str, this->version.to_string());
+        temp_config.save_to_json(this->file, this->name, from_str, this->version.to_string(), fhub_extra);
     } else {
-        this->config.save_to_json(this->file, this->name, from_str, this->version.to_string());
+        this->config.save_to_json(this->file, this->name, from_str, this->version.to_string(), fhub_extra);
     }
+
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " save config for: " << this->name << " and filament_id: " << filament_id << " and base_id: " << this->base_id;
 
     fs::path idx_file(this->file);
@@ -642,6 +651,14 @@ void Preset::reload(Preset const &parent)
         ConfigSubstitutions                config_substitutions = config.load_from_json(file, substitution_rule, key_values, reason);
         this->config = parent.config;
         this->config.apply(std::move(config));
+        // FilamentHub: restore fhub metadata from saved JSON
+        if (key_values.find("fhub_source") != key_values.end() && key_values["fhub_source"] == "filamenthub") {
+            this->is_filamenthub = true;
+            this->fhub_source = "filamenthub";
+            if (key_values.find("fhub_id") != key_values.end()) {
+                try { this->fhub_id = std::stoi(key_values["fhub_id"]); } catch (...) {}
+            }
+        }
     } catch (const std::exception &err) {
         BOOST_LOG_TRIVIAL(error) << boost::format("Failed loading the user-config file: %1%. Reason: %2%") % file % err.what();
     }
@@ -1293,6 +1310,16 @@ void PresetCollection::load_presets(
                         preset.description = key_values[BBL_JSON_KEY_DESCRIPTION];
                     if (key_values.find(BBL_JSON_KEY_INSTANTIATION) != key_values.end())
                         preset.is_visible = key_values[BBL_JSON_KEY_INSTANTIATION] != "false";
+                    // FilamentHub: restore fhub metadata on startup load
+                    if (key_values.find("fhub_source") != key_values.end() && key_values["fhub_source"] == "filamenthub") {
+                        preset.is_filamenthub = true;
+                        preset.fhub_source = "filamenthub";
+                        if (key_values.find("fhub_id") != key_values.end()) {
+                            try { preset.fhub_id = std::stoi(key_values["fhub_id"]); } catch (...) {}
+                        }
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Restored preset from saved JSON: " << name
+                                                << ", fhub_id=" << preset.fhub_id;
+                    }
 
                     //Orca: find and use the inherit config as the base
                     Preset* inherit_preset = nullptr;

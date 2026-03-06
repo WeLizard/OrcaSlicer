@@ -6,23 +6,38 @@ $OrcaDir = $PSScriptRoot
 $BuildDir = Join-Path $OrcaDir "build"
 $DepsDir = Join-Path $OrcaDir "deps"
 $DepsBuildDir = Join-Path $DepsDir "build"
-$VersionFile = Join-Path $OrcaDir "filamenthub_version.txt"
+$VersionIncFile = Join-Path $OrcaDir "version.inc"
 
 # ============================================================
-# Version Management
+# Version Management (single source of truth: version.inc)
 # ============================================================
 
-function Get-FHVersion {
-    if (Test-Path $VersionFile) {
-        return (Get-Content $VersionFile -Raw).Trim()
-    } else {
-        return "2.1.0-fh"
+function Get-BaseVersion {
+    # Read SoftFever_VERSION from version.inc (e.g. "2.3.2-dev")
+    if (Test-Path $VersionIncFile) {
+        $content = Get-Content $VersionIncFile -Raw
+        if ($content -match 'set\(SoftFever_VERSION\s+"([^"]+)"\)') {
+            return $Matches[1]
+        }
     }
+    return "0.0.0"
 }
 
-function Set-FHVersion {
+function Get-FHVersion {
+    $base = Get-BaseVersion
+    # Append -fh to whatever version upstream has (e.g. 2.3.2-dev -> 2.3.2-dev-fh)
+    if ($base -match '-fh$') {
+        return $base
+    }
+    return "$base-fh"
+}
+
+function Set-BaseVersion {
     param([string]$NewVersion)
-    $NewVersion | Out-File $VersionFile -NoNewline -Encoding utf8
+    # Write back to version.inc, always with -fh suffix in SoftFever_VERSION
+    $content = Get-Content $VersionIncFile -Raw
+    $content = $content -replace 'set\(SoftFever_VERSION\s+"[^"]+"\)', "set(SoftFever_VERSION `"$NewVersion`")"
+    $content | Set-Content $VersionIncFile -NoNewline -Encoding utf8
 }
 
 $Version = Get-FHVersion
@@ -32,19 +47,8 @@ $Version = Get-FHVersion
 # ============================================================
 
 $FilamentHubFiles = @(
-    # Old monolithic file (kept for compatibility)
     "src/slic3r/GUI/FilamentHubPanel.cpp",
     "src/slic3r/GUI/FilamentHubPanel.hpp",
-    # New modular structure
-    "src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp",
-    "src/slic3r/GUI/FilamentHub/FilamentHubPanel.hpp",
-    "src/slic3r/GUI/FilamentHub/AuthManager.cpp",
-    "src/slic3r/GUI/FilamentHub/AuthManager.hpp",
-    "src/slic3r/GUI/FilamentHub/SyncCoordinator.cpp",
-    "src/slic3r/GUI/FilamentHub/SyncCoordinator.hpp",
-    "src/slic3r/GUI/FilamentHub/PresetImporter.cpp",
-    "src/slic3r/GUI/FilamentHub/PresetImporter.hpp",
-    # HTTP client
     "src/slic3r/Utils/FilamentHubClient.cpp",
     "src/slic3r/Utils/FilamentHubClient.hpp"
 )
@@ -67,18 +71,10 @@ function Clean-BuildCache {
     Write-Host "`n>>> Cleaning FilamentHub build cache..." -ForegroundColor Yellow
 
     $objPatterns = @(
-        # Old monolithic
         "build/src/slic3r/libslic3r_gui.dir/Release/FilamentHubClient.obj",
         "build/src/slic3r/libslic3r_gui.dir/Release/FilamentHubPanel.obj",
         "build/src/slic3r/libslic3r_gui.dir/Debug/FilamentHubClient.obj",
-        "build/src/slic3r/libslic3r_gui.dir/Debug/FilamentHubPanel.obj",
-        # New modular
-        "build/src/slic3r/libslic3r_gui.dir/Release/AuthManager.obj",
-        "build/src/slic3r/libslic3r_gui.dir/Release/SyncCoordinator.obj",
-        "build/src/slic3r/libslic3r_gui.dir/Release/PresetImporter.obj",
-        "build/src/slic3r/libslic3r_gui.dir/Debug/AuthManager.obj",
-        "build/src/slic3r/libslic3r_gui.dir/Debug/SyncCoordinator.obj",
-        "build/src/slic3r/libslic3r_gui.dir/Debug/PresetImporter.obj"
+        "build/src/slic3r/libslic3r_gui.dir/Debug/FilamentHubPanel.obj"
     )
 
     $deleted = 0
@@ -209,13 +205,75 @@ function Build-Deps {
     return $true
 }
 
+function Prompt-VersionBeforeBuild {
+    $base = Get-BaseVersion
+    Write-Host ""
+    Write-Host "  Base version (version.inc): " -NoNewline
+    Write-Host "$base" -ForegroundColor Cyan
+    Write-Host "  Build version:              " -NoNewline
+    Write-Host "$Version" -ForegroundColor Yellow
+    $changeVer = Read-Host "  Change base version? (Enter = keep, or type new, e.g. 2.3.3-dev)"
+    if ($changeVer -and $changeVer -ne "") {
+        Set-BaseVersion $changeVer
+        $script:Version = Get-FHVersion
+        Write-Host "  version.inc -> $changeVer" -ForegroundColor Green
+        Write-Host "  Build version -> $Version" -ForegroundColor Green
+    }
+}
+
+function Show-PostBuildMenu {
+    Write-Host ""
+    Write-Host "  ============================================" -ForegroundColor Green
+    Write-Host "  Build successful! What's next?" -ForegroundColor Green
+    Write-Host "  ============================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  [1] Create Installer (NSIS .exe)" -ForegroundColor White
+    Write-Host "  [2] Create Portable ZIP" -ForegroundColor White
+    Write-Host "  [3] Create BOTH (Installer + Portable)" -ForegroundColor White
+    Write-Host "  [4] Run OrcaSlicer now" -ForegroundColor Cyan
+    Write-Host "  [0] Back to main menu" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $postChoice = Read-Host "  Select"
+    switch ($postChoice) {
+        "1" {
+            Build-Installer
+        }
+        "2" {
+            Create-PortableZip
+        }
+        "3" {
+            Build-Installer
+            Create-PortableZip
+            Write-Host ""
+            Write-Host "  All packages created for v$Version!" -ForegroundColor Green
+        }
+        "4" {
+            $exe = Join-Path $BuildDir "OrcaSlicer/orca-slicer.exe"
+            if (Test-Path $exe) {
+                Write-Host "  Launching OrcaSlicer..." -ForegroundColor Cyan
+                Start-Process $exe
+            } else {
+                Write-Host "  [ERROR] orca-slicer.exe not found" -ForegroundColor Red
+            }
+        }
+        default {
+            Write-Host "  Returning to main menu..." -ForegroundColor DarkGray
+        }
+    }
+}
+
 function Build-Slicer {
     param(
         [string]$BuildType = "Release",
-        [switch]$SkipDepsCheck
+        [switch]$SkipDepsCheck,
+        [switch]$SkipPostBuild
     )
 
     Write-Host "`n>>> Building OrcaSlicer ($BuildType)..." -ForegroundColor Yellow
+
+    # Offer to change version before build
+    Prompt-VersionBeforeBuild
 
     # Check if deps exist
     $depsPath = Join-Path $OrcaDir "deps/build/OrcaSlicer_dep"
@@ -299,6 +357,12 @@ function Build-Slicer {
     Write-Host "`n  [OK] Slicer built successfully!" -ForegroundColor Green
     Write-Host "  Run: $installDir\orca-slicer.exe" -ForegroundColor Cyan
     Set-Location $OrcaDir
+
+    # Show post-build packaging menu (unless called from Build-AllWindows)
+    if (-not $SkipPostBuild -and $BuildType -eq "Release") {
+        Show-PostBuildMenu
+    }
+
     return $true
 }
 
@@ -375,8 +439,11 @@ function Create-PortableZip {
 function Build-FullWindows {
     Write-Host "`n>>> Full Build Windows (deps + slicer)..." -ForegroundColor Yellow
     Write-Host "  Uses original build_release_vs2022.bat (no args = deps + slicer)" -ForegroundColor DarkGray
-    Write-Host ""
 
+    # Offer to change version before build
+    Prompt-VersionBeforeBuild
+
+    Write-Host ""
     $confirm = Read-Host "Continue? This will take 30-60 min (y/n)"
     if ($confirm -ne "y") {
         Write-Host "  [CANCELLED]" -ForegroundColor DarkGray
@@ -420,11 +487,18 @@ function Build-FullWindows {
     Write-Host "`n  [OK] Full build complete!" -ForegroundColor Green
     Write-Host "  Run: $installDir\orca-slicer.exe" -ForegroundColor Cyan
     Set-Location $OrcaDir
+
+    # Post-build packaging menu
+    Show-PostBuildMenu
 }
 
 function Build-AllWindows {
     Write-Host "`n>>> Building ALL Windows packages..." -ForegroundColor Yellow
     Write-Host "  Slicer + Installer + Portable ZIP" -ForegroundColor DarkGray
+
+    # Offer to change version before build
+    Prompt-VersionBeforeBuild
+
     Write-Host ""
 
     # Check deps first
@@ -437,7 +511,7 @@ function Build-AllWindows {
 
     # Build slicer
     Write-Host "=== Step 1/3: Building Slicer ===" -ForegroundColor Cyan
-    $result = Build-Slicer -BuildType "Release" -SkipDepsCheck
+    $result = Build-Slicer -BuildType "Release" -SkipDepsCheck -SkipPostBuild
     if (-not $result) {
         Write-Host "`n  [ERROR] Slicer build failed! Cannot continue." -ForegroundColor Red
         return
@@ -454,12 +528,106 @@ function Build-AllWindows {
     Write-Host "`n  [OK] ALL Windows packages complete!" -ForegroundColor Green
 }
 
+function Create-LinuxPortableTar {
+    Write-Host "`n>>> Creating Linux Portable tar.gz..." -ForegroundColor Yellow
+
+    $appImage = Get-ChildItem -Path $OrcaDir -Filter "OrcaSlicer-FilamentHub-$Version-linux-x64.AppImage" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if (-not $appImage) {
+        Write-Host "  [ERROR] AppImage not found for v$Version! Build Linux first." -ForegroundColor Red
+        return
+    }
+
+    $tarName = "OrcaSlicer-FilamentHub-$Version-linux-x64-portable.tar.gz"
+    $tarPath = Join-Path $OrcaDir $tarName
+
+    # Create a temp staging directory with the AppImage + a launcher script
+    $stagingDir = Join-Path $OrcaDir ".linux_portable_staging"
+    $innerDir = Join-Path $stagingDir "OrcaSlicer-FilamentHub"
+    if (Test-Path $stagingDir) { Remove-Item $stagingDir -Recurse -Force }
+    New-Item -Path $innerDir -ItemType Directory -Force | Out-Null
+
+    Copy-Item $appImage.FullName (Join-Path $innerDir $appImage.Name) -Force
+
+    # Create a launcher script
+    $launcherContent = @"
+#!/bin/bash
+DIR=`$(cd "`$(dirname "`$0")" && pwd)
+chmod +x "`$DIR/$($appImage.Name)"
+exec "`$DIR/$($appImage.Name)" "`$@"
+"@
+    $launcherContent | Out-File (Join-Path $innerDir "run.sh") -Encoding utf8 -NoNewline
+
+    # Use tar via docker or wsl if available, otherwise just zip
+    $wslAvailable = $false
+    try {
+        $wslTest = wsl echo ok 2>&1
+        if ($wslTest -eq "ok") { $wslAvailable = $true }
+    } catch {}
+
+    if ($wslAvailable) {
+        $wslStaging = wsl wslpath -u ($stagingDir -replace '\\','/')
+        wsl tar -czf (wsl wslpath -u ($tarPath -replace '\\','/')) -C $wslStaging "OrcaSlicer-FilamentHub"
+    } else {
+        # Fallback: create .zip instead of .tar.gz on pure Windows
+        $tarName = "OrcaSlicer-FilamentHub-$Version-linux-x64-portable.zip"
+        $tarPath = Join-Path $OrcaDir $tarName
+        if (Test-Path $tarPath) { Remove-Item $tarPath -Force }
+        Compress-Archive -Path "$innerDir/*" -DestinationPath $tarPath -Force
+    }
+
+    Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    if (Test-Path $tarPath) {
+        Write-Host "`n  [OK] Linux portable created: $tarName" -ForegroundColor Green
+        Write-Host "  Size: $([math]::Round((Get-Item $tarPath).Length / 1MB, 1)) MB" -ForegroundColor DarkGray
+    } else {
+        Write-Host "`n  [ERROR] Failed to create portable archive" -ForegroundColor Red
+    }
+}
+
+function Show-PostBuildMenuLinux {
+    Write-Host ""
+    Write-Host "  ============================================" -ForegroundColor Green
+    Write-Host "  Linux build successful! What's next?" -ForegroundColor Green
+    Write-Host "  ============================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  [1] Create Linux Portable archive" -ForegroundColor White
+    Write-Host "  [2] Copy to Server (Samba)" -ForegroundColor White
+    Write-Host "  [3] Both (Portable + Copy to Server)" -ForegroundColor White
+    Write-Host "  [0] Back to main menu" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $postChoice = Read-Host "  Select"
+    switch ($postChoice) {
+        "1" {
+            Create-LinuxPortableTar
+        }
+        "2" {
+            Copy-ToServer
+        }
+        "3" {
+            Create-LinuxPortableTar
+            Copy-ToServer
+            Write-Host ""
+            Write-Host "  All Linux packages done for v$Version!" -ForegroundColor Green
+        }
+        default {
+            Write-Host "  Returning to main menu..." -ForegroundColor DarkGray
+        }
+    }
+}
+
 function Build-FullLinux {
     Write-Host "`n>>> Full Build Linux (Docker)..." -ForegroundColor Yellow
     Write-Host "  This will build deps + slicer + AppImage in Docker container" -ForegroundColor DarkGray
     Write-Host "  Expected time: 30-60 minutes (first build)" -ForegroundColor DarkYellow
-    Write-Host ""
 
+    # Offer to change version before build
+    Prompt-VersionBeforeBuild
+
+    Write-Host ""
     Set-Location $OrcaDir
 
     # Check if Docker is running
@@ -497,6 +665,9 @@ function Build-FullLinux {
             Remove-Item "$OrcaDir/docker_output" -Recurse -Force -ErrorAction SilentlyContinue
             Write-Host "`n  [OK] Linux AppImage created: $newName" -ForegroundColor Green
             Write-Host "  Size: $([math]::Round((Get-Item (Join-Path $OrcaDir $newName)).Length / 1MB, 1)) MB" -ForegroundColor DarkGray
+
+            # Post-build menu for Linux
+            Show-PostBuildMenuLinux
         } else {
             Write-Host "`n  [WARNING] AppImage not found in Docker output" -ForegroundColor Yellow
         }
@@ -505,6 +676,118 @@ function Build-FullLinux {
     }
 
     Set-Location $OrcaDir
+}
+
+function Package-ExistingBuild {
+    Write-Host "`n>>> Package existing build (v$Version)" -ForegroundColor Yellow
+
+    # Check if Windows build exists
+    $winBuild = Join-Path $BuildDir "OrcaSlicer/orca-slicer.exe"
+    $linuxBuild = Get-ChildItem -Path $OrcaDir -Filter "OrcaSlicer-FilamentHub-*-linux-x64.AppImage" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+    $hasWin = Test-Path $winBuild
+    $hasLinux = $null -ne $linuxBuild
+
+    if (-not $hasWin -and -not $hasLinux) {
+        Write-Host "  [ERROR] No builds found! Build slicer first." -ForegroundColor Red
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  Detected builds:" -ForegroundColor Cyan
+    if ($hasWin) {
+        $winInfo = Get-Item $winBuild
+        Write-Host "  [W] Windows build  " -NoNewline -ForegroundColor Green
+        Write-Host "(built: $($winInfo.LastWriteTime))" -ForegroundColor DarkGray
+    }
+    if ($hasLinux) {
+        Write-Host "  [L] Linux AppImage " -NoNewline -ForegroundColor Green
+        Write-Host "($($linuxBuild.Name))" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+
+    # Check existing packages
+    $existingPkgs = @()
+    $patterns = @(
+        @{ Pattern = "*$Version*setup*.exe"; Name = "Windows Installer" },
+        @{ Pattern = "*$Version*portable*.zip"; Name = "Windows Portable ZIP" },
+        @{ Pattern = "*$Version*linux*portable*"; Name = "Linux Portable" },
+        @{ Pattern = "*$Version*.AppImage"; Name = "Linux AppImage" }
+    )
+    foreach ($p in $patterns) {
+        $file = Get-ChildItem -Path $OrcaDir -Filter $p.Pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($file) {
+            $existingPkgs += "    [x] $($p.Name): $($file.Name)"
+        }
+    }
+    if ($existingPkgs.Count -gt 0) {
+        Write-Host "  Already packaged:" -ForegroundColor DarkCyan
+        $existingPkgs | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+        Write-Host ""
+    }
+
+    # Build the options list dynamically
+    Write-Host "  What to create:" -ForegroundColor Cyan
+    $optNum = 1
+    $options = @{}
+
+    if ($hasWin) {
+        Write-Host "  [$optNum] Windows Installer (NSIS .exe)" -ForegroundColor White
+        $options["$optNum"] = "win_installer"
+        $optNum++
+
+        Write-Host "  [$optNum] Windows Portable ZIP" -ForegroundColor White
+        $options["$optNum"] = "win_portable"
+        $optNum++
+
+        Write-Host "  [$optNum] Windows BOTH (Installer + Portable)" -ForegroundColor White
+        $options["$optNum"] = "win_both"
+        $optNum++
+    }
+    if ($hasLinux) {
+        Write-Host "  [$optNum] Linux Portable archive" -ForegroundColor White
+        $options["$optNum"] = "linux_portable"
+        $optNum++
+    }
+    if ($hasWin -and $hasLinux) {
+        Write-Host "  [$optNum] ALL packages (Windows + Linux)" -ForegroundColor White
+        $options["$optNum"] = "all"
+        $optNum++
+    }
+    if ($hasWin) {
+        Write-Host "  [R] Run OrcaSlicer" -ForegroundColor Cyan
+    }
+    Write-Host "  [0] Back to main menu" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $pkgChoice = Read-Host "  Select"
+
+    if ($pkgChoice -eq "R" -or $pkgChoice -eq "r") {
+        if ($hasWin) {
+            Write-Host "  Launching OrcaSlicer..." -ForegroundColor Cyan
+            Start-Process $winBuild
+        }
+        return
+    }
+    if ($pkgChoice -eq "0" -or -not $options.ContainsKey($pkgChoice)) {
+        return
+    }
+
+    $action = $options[$pkgChoice]
+
+    switch ($action) {
+        "win_installer"   { Build-Installer }
+        "win_portable"    { Create-PortableZip }
+        "win_both"        { Build-Installer; Create-PortableZip }
+        "linux_portable"  { Create-LinuxPortableTar }
+        "all" {
+            Build-Installer
+            Create-PortableZip
+            Create-LinuxPortableTar
+            Write-Host "`n  All packages created for v$Version!" -ForegroundColor Green
+        }
+    }
 }
 
 # ============================================================
@@ -668,10 +951,10 @@ function Check-BuildStatus {
     # FilamentHub module status
     Write-Host "  FilamentHub Modules:" -ForegroundColor DarkCyan
     $moduleFiles = @(
-        "src/slic3r/GUI/FilamentHub/AuthManager.cpp",
-        "src/slic3r/GUI/FilamentHub/SyncCoordinator.cpp",
-        "src/slic3r/GUI/FilamentHub/PresetImporter.cpp",
-        "src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp"
+        "src/slic3r/GUI/FilamentHubPanel.cpp",
+        "src/slic3r/GUI/FilamentHubPanel.hpp",
+        "src/slic3r/Utils/FilamentHubClient.cpp",
+        "src/slic3r/Utils/FilamentHubClient.hpp"
     )
     foreach ($mf in $moduleFiles) {
         $fullPath = Join-Path $OrcaDir $mf
@@ -727,16 +1010,20 @@ function Check-BuildStatus {
 function Change-Version {
     Write-Host "`n>>> Change Version" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Current version: $Version" -ForegroundColor Cyan
+    $base = Get-BaseVersion
+    Write-Host "  Base version (version.inc): $base" -ForegroundColor Cyan
+    Write-Host "  Build version:              $Version" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Examples: 2.1.0-fh, 2.1.1-fh, 2.2.0-fh-beta" -ForegroundColor DarkGray
+    Write-Host "  Enter the base version. '-fh' will be appended automatically." -ForegroundColor DarkGray
+    Write-Host "  Examples: 2.3.2-dev, 2.3.3, 2.4.0-rc1" -ForegroundColor DarkGray
     Write-Host ""
 
-    $newVersion = Read-Host "  Enter new version (or press Enter to cancel)"
+    $newVersion = Read-Host "  Enter new base version (or press Enter to cancel)"
     if ($newVersion -and $newVersion -ne "") {
-        Set-FHVersion $newVersion
-        $script:Version = $newVersion
-        Write-Host "`n  [OK] Version changed to: $newVersion" -ForegroundColor Green
+        Set-BaseVersion $newVersion
+        $script:Version = Get-FHVersion
+        Write-Host "`n  [OK] version.inc -> $newVersion" -ForegroundColor Green
+        Write-Host "  [OK] Build version -> $Version" -ForegroundColor Green
     } else {
         Write-Host "`n  [CANCELLED]" -ForegroundColor DarkGray
     }
@@ -797,6 +1084,7 @@ function Show-Menu {
     Write-Host " [2] Build ALL Windows (Slicer + Installer + Portable)" -ForegroundColor White
     Write-Host " [3] Build Slicer (Debug)" -ForegroundColor White
     Write-Host " [4] Build Slicer (RelWithDebInfo)" -ForegroundColor White
+    Write-Host " [5] Package existing build (Installer / Portable / both)" -ForegroundColor White
     Write-Host ""
     Write-Host " --- Full Build (from scratch) ---" -ForegroundColor Yellow
     Write-Host " [F] Full Build Windows (deps + slicer)" -ForegroundColor White
@@ -841,6 +1129,7 @@ while ($true) {
         "2" { Build-AllWindows; Read-Host "`nPress Enter..." }
         "3" { Build-Debug; Read-Host "`nPress Enter..." }
         "4" { Build-RelWithDebInfo; Read-Host "`nPress Enter..." }
+        "5" { Package-ExistingBuild; Read-Host "`nPress Enter..." }
 
         # Full Build
         "F" { Build-FullWindows; Read-Host "`nPress Enter..." }

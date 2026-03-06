@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Agent navigation
+
+- [README.md](README.md)
+- [CHANGES.md](CHANGES.md)
+- [SYNC_ANALYSIS.md](SYNC_ANALYSIS.md)
+- [TESTING_PLAN.md](TESTING_PLAN.md)
+- [TESTING_REPORT.md](TESTING_REPORT.md)
+- [FilamentHub Delta Map](docs/md/FILAMENTHUB_DELTA_MAP.md)
+
 ## Project Structure & Module Organization
 OrcaSlicer’s C++17 sources live in `src/`, split by feature modules and platform adapters. User assets, icons, and printer presets are in `resources/`; translations stay in `localization/`. Tests sit in `tests/`, grouped by domain (`libslic3r/`, `sla_print/`, etc.) with fixtures under `tests/data/`. CMake helpers reside in `cmake/`, and longer references in `doc/` and `SoftFever_doc/`. Automation scripts belong in `scripts/` and `tools/`. Treat everything in `deps/` and `deps_src/` as vendored snapshots—do not modify without mirroring upstream tags.
 

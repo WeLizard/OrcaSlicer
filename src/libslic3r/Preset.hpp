@@ -229,6 +229,8 @@ public:
     bool                is_project_embedded = false;
     // FilamentHub: preset synced from FilamentHub cloud
     bool                is_filamenthub = false;
+    std::string         fhub_source;
+    int                 fhub_id = 0;
     ConfigSubstitutions *loading_substitutions{nullptr};
     // User preset = not default, not system, not project-embedded, not filamenthub
     bool                is_user() const { return !this->is_default && !this->is_system && !this->is_project_embedded && !this->is_filamenthub; }

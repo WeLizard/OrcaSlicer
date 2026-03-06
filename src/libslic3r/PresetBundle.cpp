@@ -1117,7 +1117,12 @@ bool PresetBundle::import_json_presets(PresetsConfigSubstitutions &            s
         // FilamentHub: detect presets imported from FilamentHub cloud
         if (key_values.find("fhub_source") != key_values.end() && key_values["fhub_source"] == "filamenthub") {
             preset.is_filamenthub = true;
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Marked preset as FilamentHub cloud preset: " << name;
+            preset.fhub_source = "filamenthub";
+            if (key_values.find("fhub_id") != key_values.end()) {
+                try { preset.fhub_id = std::stoi(key_values["fhub_id"]); } catch (...) {}
+            }
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Marked preset as FilamentHub cloud preset: " << name
+                                    << ", fhub_id=" << preset.fhub_id;
         }
         inherit_preset     = collection->find_preset(inherits_value, false, true); // pointer maybe wrong after insert, redo find
         if (inherit_preset) preset.base_id = inherit_preset->setting_id;

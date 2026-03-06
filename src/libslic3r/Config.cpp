@@ -1467,7 +1467,8 @@ ConfigSubstitutions ConfigBase::load_from_gcode_file(const std::string &file, Fo
 }
 
 //BBS: add json support
-void ConfigBase::save_to_json(const std::string &file, const std::string &name, const std::string &from, const std::string &version) const
+void ConfigBase::save_to_json(const std::string &file, const std::string &name, const std::string &from, const std::string &version,
+                              const std::map<std::string, std::string> &extra_kv) const
 {
     json j;
     //record the headers
@@ -1501,6 +1502,10 @@ void ConfigBase::save_to_json(const std::string &file, const std::string &name, 
             j[opt_key] = j_array;
         }
     }
+
+    // Append extra key-value pairs (e.g. FilamentHub metadata)
+    for (const auto &kv : extra_kv)
+        j[kv.first] = kv.second;
 
     boost::nowide::ofstream c;
     c.open(file, std::ios::out | std::ios::trunc);

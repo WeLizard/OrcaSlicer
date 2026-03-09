@@ -1,8 +1,10 @@
 #include "MoonrakerPrinterAgent.hpp"
+#include "FilamentHubClient.hpp"
 #include "Http.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "libslic3r/AppConfig.hpp"
 #include "slic3r/GUI/DeviceCore/DevFilaSystem.h"
 #include "slic3r/GUI/DeviceCore/DevManager.h"
 #include "../GUI/DeviceCore/DevStorage.h"
@@ -894,11 +896,37 @@ bool MoonrakerPrinterAgent::fetch_hh_filament_info(std::vector<AmsTrayData>& tra
     const auto& gate_material = mmu.contains("gate_material") ? mmu["gate_material"] : nlohmann::json::array();
     const auto& gate_color = mmu.contains("gate_color") ? mmu["gate_color"] : nlohmann::json::array();
     const auto& gate_temperature = mmu.contains("gate_temperature") ? mmu["gate_temperature"] : nlohmann::json::array();
+    const auto& gate_spool_id = mmu.contains("gate_spool_id") ? mmu["gate_spool_id"] : nlohmann::json::array();
 
     if (!gate_status.is_array() || !gate_material.is_array() ||
         !gate_color.is_array() || !gate_temperature.is_array()) {
         BOOST_LOG_TRIVIAL(warning) << "MoonrakerPrinterAgent::fetch_hh_filament_info: HH arrays not found or invalid type";
         return false;
+    }
+
+    // FilamentHub integration: resolve spool IDs to preset setting_ids
+    // so we can match the exact user preset instead of falling back to Generic.
+    std::map<int, int> spool_to_preset;  // spool_id -> FH preset_id
+    if (gate_spool_id.is_array()) {
+        // Collect valid spool IDs
+        std::string spool_ids_param;
+        for (int i = 0; i < num_gates; ++i) {
+            int sid = safe_array_int(gate_spool_id, i);
+            if (sid > 0) {
+                if (!spool_ids_param.empty()) spool_ids_param += ",";
+                spool_ids_param += std::to_string(sid);
+            }
+        }
+        // Call FilamentHub API if user is authenticated
+        if (!spool_ids_param.empty()) {
+            std::string access_token;
+            if (GUI::wxGetApp().app_config)
+                access_token = GUI::wxGetApp().app_config->get("filamenthub", "access_token");
+            if (!access_token.empty()) {
+                FilamentHubClient client;
+                spool_to_preset = client.resolve_spool_presets_sync(access_token, spool_ids_param);
+            }
+        }
     }
 
     // Parse gate data
@@ -930,10 +958,42 @@ bool MoonrakerPrinterAgent::fetch_hh_filament_info(std::vector<AmsTrayData>& tra
         tray.bed_temp = 0;  // HH doesn't provide bed temp in gate arrays
         tray.has_filament = true;
 
-        auto* bundle = GUI::wxGetApp().preset_bundle;
-        tray.tray_info_idx = bundle
-            ? bundle->filaments.filament_id_by_type(tray.tray_type)
-            : map_filament_type_to_generic_id(tray.tray_type);
+        // Try to resolve exact FilamentHub preset via spool_id → preset_mapping
+        std::string resolved_info_idx;
+        int spool_id = safe_array_int(gate_spool_id, gate_idx);
+        if (spool_id > 0) {
+            auto it = spool_to_preset.find(spool_id);
+            if (it != spool_to_preset.end()) {
+                int fh_preset_id = it->second;
+                // Look up local OrcaSlicer preset name via preset_mapping in AppConfig
+                if (GUI::wxGetApp().app_config) {
+                    std::string local_name = GUI::wxGetApp().app_config->get(
+                        "filamenthub", "preset_mapping_" + std::to_string(fh_preset_id));
+                    if (!local_name.empty() && local_name != "true") {
+                        auto* bundle = GUI::wxGetApp().preset_bundle;
+                        if (bundle) {
+                            const Preset* local_preset = bundle->filaments.find_preset(local_name, false);
+                            if (local_preset && !local_preset->filament_id.empty()) {
+                                resolved_info_idx = local_preset->filament_id;
+                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: gate " << gate_idx
+                                    << " spool_id=" << spool_id << " resolved to preset '"
+                                    << local_name << "' (filament_id=" << resolved_info_idx << ")";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!resolved_info_idx.empty()) {
+            tray.tray_info_idx = resolved_info_idx;
+        } else {
+            // Fallback: generic material type matching (standard OrcaSlicer behavior)
+            auto* bundle = GUI::wxGetApp().preset_bundle;
+            tray.tray_info_idx = bundle
+                ? bundle->filaments.filament_id_by_type(tray.tray_type)
+                : map_filament_type_to_generic_id(tray.tray_type);
+        }
 
         max_lane_index = std::max(max_lane_index, gate_idx);
         trays.push_back(tray);

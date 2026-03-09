@@ -770,4 +770,54 @@ void FilamentHubClient::get_presets_stats(
     }
 }
 
+std::map<int, int> FilamentHubClient::resolve_spool_presets_sync(
+    const std::string& access_token,
+    const std::string& spool_ids)
+{
+    std::map<int, int> result;
+    if (access_token.empty() || spool_ids.empty())
+        return result;
+
+    std::string url = get_api_base_url() + "/api/v1/orcaslicer/spool-preset-mapping?spool_ids=" + spool_ids;
+    std::string response_body;
+    bool ok = false;
+
+    Http::get(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("Authorization", "Bearer " + access_token)
+        .timeout_connect(3)
+        .timeout_max(5)
+        .on_complete([&](std::string body, unsigned status) {
+            if (status == 200) {
+                response_body = std::move(body);
+                ok = true;
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: resolve_spool_presets_sync HTTP " << status;
+            }
+        })
+        .on_error([](std::string, std::string error, unsigned) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: resolve_spool_presets_sync error: " << error;
+        })
+        .perform_sync();
+
+    if (!ok)
+        return result;
+
+    auto json = nlohmann::json::parse(response_body, nullptr, false);
+    if (json.is_discarded() || !json.contains("mapping"))
+        return result;
+
+    for (auto& [spool_id_str, val] : json["mapping"].items()) {
+        if (val.is_null() || !val.contains("preset_id"))
+            continue;
+        int spool_id = std::stoi(spool_id_str);
+        int preset_id = val["preset_id"].get<int>();
+        result[spool_id] = preset_id;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: resolve_spool_presets_sync resolved " << result.size() << " spools";
+    return result;
+}
+
 } // namespace Slic3r

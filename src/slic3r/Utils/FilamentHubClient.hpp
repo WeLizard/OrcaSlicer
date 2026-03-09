@@ -33,6 +33,7 @@
 
 #include <string>
 #include <functional>
+#include <map>
 #include <memory>
 #include <vector>
 #include <mutex>
@@ -368,10 +369,27 @@ public:
     );
 
     /**
+     * \brief Resolve spool IDs to OrcaSlicer preset setting_ids (synchronous)
+     *
+     * Calls GET /api/v1/orcaslicer/spool-preset-mapping?spool_ids=...
+     * Returns a map of spool_id -> preset_id. Used by MoonrakerPrinterAgent
+     * to match HH gate spools to installed FilamentHub presets during AMS sync.
+     * Must be called from a background thread (uses perform_sync).
+     *
+     * \param access_token JWT access token
+     * \param spool_ids Comma-separated spool IDs (e.g. "1,5,8")
+     * \return Map of spool_id -> preset_id (only entries with valid presets)
+     */
+    std::map<int, int> resolve_spool_presets_sync(
+        const std::string& access_token,
+        const std::string& spool_ids
+    );
+
+    /**
      * \brief Get presets statistics
-     * 
+     *
      * Retrieves statistics about user's presets (total count and synced count).
-     * 
+     *
      * \param access_token JWT access token
      * \param on_complete Called when request succeeds. Parameters: (response_body with total_presets and synced_presets, http_status)
      * \param on_error Called when request fails. Parameters: (response_body, error_message, http_status)

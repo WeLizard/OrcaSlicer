@@ -259,17 +259,6 @@ void FilamentHubPanel::init()
     m_notifications_button = nullptr; // Not used anymore
     m_notifications_badge = nullptr; // Not used anymore
     
-    // Admin button - opens admin panel (only if admin)
-    m_admin_button = new Button(m_info_panel, _L("Admin"));
-    set_button_square_style(m_admin_button, ButtonStyle::Alert);
-    m_admin_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { 
-        m_active_page = "admin";
-        update_active_button_style();
-        navigate_without_reload("/admin");
-    });
-    m_admin_button->Hide(); // Hidden by default (shown when admin)
-    info_sizer->Add(m_admin_button, 0, wxALIGN_CENTER_VERTICAL);
-    
     // Login button - redirects to login page in WebView (user logs in there)
     m_login_button = new Button(m_info_panel, _L("Login"));
     set_button_square_style(m_login_button, ButtonStyle::Confirm);
@@ -3271,16 +3260,9 @@ void FilamentHubPanel::update_user_info()
                     email = user_json["email"].get<std::string>();
                 }
 
-                // Проверяем роль пользователя для показа кнопки Admin
-                std::string role;
-                if (user_json.contains("role") && !user_json["role"].is_null()) {
-                    role = user_json["role"].get<std::string>();
-                }
-
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Parsed user data - username: '" << username
                                         << "', full_name: '" << full_name
-                                        << "', email: '" << email
-                                        << "', role: '" << role << "'";
+                                        << "', email: '" << email << "'";
 
                 wxString display_name;
                 if (!full_name.empty()) {
@@ -3297,18 +3279,9 @@ void FilamentHubPanel::update_user_info()
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Setting display name: " << display_name.ToUTF8();
 
                 // Все UI-обновления через CallAfter (callback вызывается из background thread)
-                CallAfter([this, role, display_name]() {
+                CallAfter([this, display_name]() {
                     m_user_name_label->SetLabel(display_name);
 
-                    if (role == "admin") {
-                        if (m_admin_button) {
-                            m_admin_button->Show();
-                        }
-                    } else {
-                        if (m_admin_button) {
-                            m_admin_button->Hide();
-                        }
-                    }
                     if (m_info_panel) {
                         m_info_panel->Layout();
                     }
@@ -3472,7 +3445,6 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         // if (m_notifications_badge != nullptr) {
         //     m_notifications_badge->Hide();
         // }
-        m_admin_button->Hide(); // Скрываем кнопку админки (если была показана)
         m_logout_button->Hide();
         
         // Reset unread notifications count
@@ -3524,10 +3496,6 @@ void FilamentHubPanel::update_active_button_style()
     if (m_wiki_button) {
         set_button_square_style(m_wiki_button, ButtonStyle::Regular);
     }
-    if (m_admin_button) {
-        // Admin button uses Alert style when inactive
-        set_button_square_style(m_admin_button, ButtonStyle::Alert);
-    }
 
     // Set active button to Confirm style (green) - keep square corners
     if (m_active_page == "catalog" && m_catalog_button) {
@@ -3536,8 +3504,6 @@ void FilamentHubPanel::update_active_button_style()
         set_button_square_style(m_profile_button, ButtonStyle::Confirm);
     } else if (m_active_page == "wiki" && m_wiki_button) {
         set_button_square_style(m_wiki_button, ButtonStyle::Confirm);
-    } else if (m_active_page == "admin" && m_admin_button) {
-        set_button_square_style(m_admin_button, ButtonStyle::Confirm);
     }
     
     if (m_info_panel) {
@@ -3837,9 +3803,7 @@ void FilamentHubPanel::update_async_ui()
     //     m_notifications_button->Enable(!busy);
     // }
 
-    if (m_admin_button != nullptr) {
-        m_admin_button->Enable(!busy);
-    }
+
 
     if (m_login_button != nullptr) {
         m_login_button->Enable(!busy);

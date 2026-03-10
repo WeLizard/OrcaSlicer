@@ -598,7 +598,7 @@ private:
     Button* m_settings_button { nullptr }; // Settings button for URLs
     Button* m_notifications_button { nullptr }; // Notifications button (only if logged in)
     wxStaticText* m_notifications_badge { nullptr }; // Badge showing unread notifications count
-    Button* m_admin_button { nullptr }; // Admin panel button (only if admin)
+
     Button* m_refresh_button { nullptr }; // Refresh/Reload button
     std::atomic<bool> m_is_syncing { false }; // Is sync in progress (atomic for thread safety)
     std::atomic<int> m_active_syncs { 0 }; // Number of active sync operations (presets, printer profiles, print profiles)

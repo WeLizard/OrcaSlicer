@@ -42,22 +42,36 @@ function Set-BaseVersion {
 
 $Version = Get-FHVersion
 
-function Get-UpstreamVersion {
-    # Read SoftFever_VERSION from upstream/main version.inc (source of truth)
+function Get-UpstreamVersionFromBranch {
+    param([string]$Branch)
     try {
-        $content = (& git show "upstream/main:version.inc" 2>$null) | Out-String
+        $content = (& git show "${Branch}:version.inc" 2>$null) | Out-String
         if ($LASTEXITCODE -eq 0 -and $content -match 'set\(SoftFever_VERSION\s+"([^"]+)"\)') {
             return $Matches[1]
         }
     } catch {}
-    # Fallback: latest stable tag
-    try {
-        $tag = git tag -l "v*" --sort=-version:refname 2>$null |
-            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
-            Select-Object -First 1
-        if ($tag) { return $tag }
-    } catch {}
-    return "unknown"
+    return $null
+}
+
+function Get-UpstreamInfo {
+    # Returns hashtable with main (dev) and latest release versions
+    $info = @{ Main = "unknown"; Release = $null; ReleaseBranch = $null }
+    $main = Get-UpstreamVersionFromBranch "upstream/main"
+    if ($main) { $info.Main = $main }
+    # Check top release branches and pick the one with highest version in version.inc
+    $relBranches = git branch -r --list "upstream/release/v*" --sort=-version:refname 2>$null |
+        ForEach-Object { $_.Trim() } |
+        Select-Object -First 3
+    foreach ($branch in $relBranches) {
+        $rel = Get-UpstreamVersionFromBranch $branch
+        if ($rel -and $rel -ne $main) {
+            if (-not $info.Release -or ([version]($rel -replace '-.*','') -gt [version]($info.Release -replace '-.*',''))) {
+                $info.Release = $rel
+                $info.ReleaseBranch = $branch -replace '^upstream/', ''
+            }
+        }
+    }
+    return $info
 }
 
 # ============================================================
@@ -1016,9 +1030,13 @@ function Check-BuildStatus {
         Write-Host "$($changes.Lines) uncommitted changes" -ForegroundColor Yellow
     }
 
-    $upstreamVer = Get-UpstreamVersion
-    Write-Host "  Upstream ver:  " -NoNewline
-    Write-Host "$upstreamVer" -ForegroundColor DarkCyan
+    $upstream = Get-UpstreamInfo
+    Write-Host "  Upstream main: " -NoNewline
+    Write-Host "$($upstream.Main)" -ForegroundColor DarkGray
+    if ($upstream.Release) {
+        Write-Host "  Upstream rel:  " -NoNewline
+        Write-Host "$($upstream.Release) ($($upstream.ReleaseBranch))" -ForegroundColor DarkCyan
+    }
 
     Write-Host "  Upstream:      " -NoNewline
     $behind = git rev-list --count "HEAD..upstream/main" 2>$null
@@ -1097,11 +1115,16 @@ function Show-Menu {
     Write-Host " OrcaSlicer FilamentHub Edition - Builder   " -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
-    $upstreamVer = Get-UpstreamVersion
-    Write-Host " FH Version:       " -NoNewline
+    $upstream = Get-UpstreamInfo
+    Write-Host " FH Version:     " -NoNewline
     Write-Host "$Version" -ForegroundColor Yellow
-    Write-Host " Upstream (official): " -NoNewline
-    Write-Host "$upstreamVer" -ForegroundColor DarkCyan
+    Write-Host " Upstream main:  " -NoNewline
+    Write-Host "$($upstream.Main)" -ForegroundColor DarkGray
+    if ($upstream.Release) {
+        Write-Host " Upstream release:" -NoNewline
+        Write-Host " $($upstream.Release)" -ForegroundColor DarkCyan -NoNewline
+        Write-Host " ($($upstream.ReleaseBranch))" -ForegroundColor DarkGray
+    }
     Write-Host " Dir: $OrcaDir" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host " --- Quick Build (deps exist) ---" -ForegroundColor Green

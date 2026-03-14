@@ -102,6 +102,26 @@ static nlohmann::json get_config_json(const DynamicPrintConfig& config) {
     return j;
 }
 
+// Helper: safely parse fhub_id from JSON value that can be int, string, or FHUB-prefixed string
+// Returns 0 on failure (invalid format, "true", empty, etc.)
+static int parse_fhub_id(const nlohmann::json& val) {
+    try {
+        if (val.is_number_integer()) {
+            return val.get<int>();
+        }
+        if (val.is_string()) {
+            std::string s = val.get<std::string>();
+            if (s.empty() || s == "true" || s == "True" || s == "TRUE")
+                return 0;
+            // FHUB-prefix: "FHUB000013" → 13
+            if (s.size() > 4 && (s.substr(0, 4) == "FHUB" || s.substr(0, 4) == "fhub"))
+                return std::stoi(s.substr(4));
+            return std::stoi(s);
+        }
+    } catch (...) {}
+    return 0;
+}
+
 // Static member initialization
 const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "https://filamenthub.ru";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";
@@ -765,10 +785,17 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
                 refresh_token = j["data"]["refresh_token"].get<std::string>();
             }
 
-            // user_id может быть null в JSON
+            // user_id может быть null, string или boolean в JSON — парсим безопасно
             int user_id = 0;
             if (!j["data"]["user_id"].is_null()) {
-                user_id = j["data"]["user_id"].get<int>();
+                if (j["data"]["user_id"].is_number()) {
+                    user_id = j["data"]["user_id"].get<int>();
+                } else if (j["data"]["user_id"].is_string()) {
+                    try { user_id = std::stoi(j["data"]["user_id"].get<std::string>()); }
+                    catch (...) { BOOST_LOG_TRIVIAL(warning) << "FilamentHub: user_id is not numeric: " << j["data"]["user_id"].dump(); }
+                } else {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: unexpected user_id type: " << j["data"]["user_id"].dump();
+                }
             } else {
                 // Если user_id не передан, получаем его через API
                 m_fhub_client->set_api_base_url(m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url);
@@ -5143,8 +5170,8 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         // Извлекаем метки FilamentHub из оригинального JSON
                         if (original_json.contains("fhub_id")) {
                             orcaslicer_json["fhub_id"] = original_json["fhub_id"];
-                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for filament preset: " 
-                                                     << preset.name << " -> fhub_id=" << original_json["fhub_id"].get<int>();
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for filament preset: "
+                                                     << preset.name << " -> fhub_id=" << parse_fhub_id(original_json["fhub_id"]);
                         }
                         if (original_json.contains("fhub_source")) {
                             orcaslicer_json["fhub_source"] = original_json["fhub_source"];
@@ -5188,17 +5215,13 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
             // Проверяем метки из orcaslicer_json (приоритет над маппингом из AppConfig)
             bool has_fhub_id_from_json = false;
             if (orcaslicer_json.contains("fhub_id") && orcaslicer_json.contains("fhub_source")) {
-                try {
-                    int fhub_id = orcaslicer_json["fhub_id"].get<int>();
-                    std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
-                    if (fhub_source == "filamenthub" && fhub_id > 0) {
-                        preset_data["fhub_id"] = fhub_id;
-                        has_fhub_id_from_json = true;
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for filament preset: " 
-                                               << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from JSON metadata: " << e.what();
+                int fhub_id = parse_fhub_id(orcaslicer_json["fhub_id"]);
+                std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
+                if (fhub_source == "filamenthub" && fhub_id > 0) {
+                    preset_data["fhub_id"] = fhub_id;
+                    has_fhub_id_from_json = true;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for filament preset: "
+                                           << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
                 }
             }
             
@@ -5349,15 +5372,10 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
                     
-                    // Безопасно извлекаем fhub_id (может быть null)
+                    // Безопасно извлекаем fhub_id (может быть int или string)
                     int fhub_id = 0;
                     if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
-                        try {
-                            fhub_id = result["fhub_id"].get<int>();
-                        } catch (const std::exception& e) {
-                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id: " << e.what();
-                            fhub_id = 0;
-                        }
+                        fhub_id = parse_fhub_id(result["fhub_id"]);
                     }
                     
                     if (status == "created") {
@@ -5668,8 +5686,8 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                         // Извлекаем метки FilamentHub из оригинального JSON
                         if (original_json.contains("fhub_id")) {
                             orcaslicer_json["fhub_id"] = original_json["fhub_id"];
-                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for printer profile: " 
-                                                     << preset.name << " -> fhub_id=" << original_json["fhub_id"].get<int>();
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for printer profile: "
+                                                     << preset.name << " -> fhub_id=" << parse_fhub_id(original_json["fhub_id"]);
                         }
                         if (original_json.contains("fhub_source")) {
                             orcaslicer_json["fhub_source"] = original_json["fhub_source"];
@@ -5703,17 +5721,13 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
             // Проверяем метки из orcaslicer_json (приоритет над маппингом из AppConfig)
             bool has_fhub_id_from_json = false;
             if (orcaslicer_json.contains("fhub_id") && orcaslicer_json.contains("fhub_source")) {
-                try {
-                    int fhub_id = orcaslicer_json["fhub_id"].get<int>();
-                    std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
-                    if (fhub_source == "filamenthub" && fhub_id > 0) {
-                        profile_data["fhub_id"] = fhub_id;
-                        has_fhub_id_from_json = true;
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for printer profile: " 
-                                               << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from JSON metadata: " << e.what();
+                int fhub_id = parse_fhub_id(orcaslicer_json["fhub_id"]);
+                std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
+                if (fhub_source == "filamenthub" && fhub_id > 0) {
+                    profile_data["fhub_id"] = fhub_id;
+                    has_fhub_id_from_json = true;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for printer profile: "
+                                           << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
                 }
             }
             
@@ -6016,15 +6030,10 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
                     
-                    // Безопасно извлекаем fhub_id (может быть null)
+                    // Безопасно извлекаем fhub_id (может быть int или string)
                     int fhub_id = 0;
                     if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
-                        try {
-                            fhub_id = result["fhub_id"].get<int>();
-                        } catch (const std::exception& e) {
-                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id: " << e.what();
-                            fhub_id = 0;
-                        }
+                        fhub_id = parse_fhub_id(result["fhub_id"]);
                     }
                     
                     if (status == "created") {
@@ -6306,8 +6315,8 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                         // Извлекаем метки FilamentHub из оригинального JSON
                         if (original_json.contains("fhub_id")) {
                             orcaslicer_json["fhub_id"] = original_json["fhub_id"];
-                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for print profile: " 
-                                                     << preset.name << " -> fhub_id=" << original_json["fhub_id"].get<int>();
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Extracted fhub_id from JSON file for print profile: "
+                                                     << preset.name << " -> fhub_id=" << parse_fhub_id(original_json["fhub_id"]);
                         }
                         if (original_json.contains("fhub_source")) {
                             orcaslicer_json["fhub_source"] = original_json["fhub_source"];
@@ -6341,17 +6350,13 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
             // Проверяем метки из orcaslicer_json (приоритет над маппингом из AppConfig)
             bool has_fhub_id_from_json = false;
             if (orcaslicer_json.contains("fhub_id") && orcaslicer_json.contains("fhub_source")) {
-                try {
-                    int fhub_id = orcaslicer_json["fhub_id"].get<int>();
-                    std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
-                    if (fhub_source == "filamenthub" && fhub_id > 0) {
-                        profile_data["fhub_id"] = fhub_id;
-                        has_fhub_id_from_json = true;
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for print profile: " 
-                                               << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
-                    }
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id from JSON metadata: " << e.what();
+                int fhub_id = parse_fhub_id(orcaslicer_json["fhub_id"]);
+                std::string fhub_source = orcaslicer_json["fhub_source"].get<std::string>();
+                if (fhub_source == "filamenthub" && fhub_id > 0) {
+                    profile_data["fhub_id"] = fhub_id;
+                    has_fhub_id_from_json = true;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found fhub_id from JSON metadata for print profile: "
+                                           << preset.name << " -> fhub_id=" << fhub_id << ", source=" << fhub_source;
                 }
             }
             
@@ -6595,15 +6600,10 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
                     
-                    // Безопасно извлекаем fhub_id (может быть null)
+                    // Безопасно извлекаем fhub_id (может быть int или string)
                     int fhub_id = 0;
                     if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
-                        try {
-                            fhub_id = result["fhub_id"].get<int>();
-                        } catch (const std::exception& e) {
-                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to parse fhub_id: " << e.what();
-                            fhub_id = 0;
-                        }
+                        fhub_id = parse_fhub_id(result["fhub_id"]);
                     }
                     
                     if (status == "created") {

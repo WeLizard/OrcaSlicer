@@ -636,10 +636,18 @@ void FilamentHubPanel::OnLoaded(wxWebViewEvent& evt)
         
         // Monitor localStorage for token changes (when user logs in/out via frontend)
         // Задержка 2 сек — чтобы C++ успел инжектировать токен и polling не сработал ложно
-        let lastToken = null;
-        setTimeout(() => {
-            lastToken = localStorage.getItem('access_token');
-            setInterval(() => {
+        // FIX: очищаем предыдущий interval при повторной загрузке (SPA navigation / reload)
+        if (window._fhTokenMonitorId) {
+            clearInterval(window._fhTokenMonitorId);
+            window._fhTokenMonitorId = null;
+        }
+        if (window._fhTokenMonitorTimeoutId) {
+            clearTimeout(window._fhTokenMonitorTimeoutId);
+            window._fhTokenMonitorTimeoutId = null;
+        }
+        window._fhTokenMonitorTimeoutId = setTimeout(() => {
+            var lastToken = localStorage.getItem('access_token');
+            window._fhTokenMonitorId = setInterval(() => {
                 const currentToken = localStorage.getItem('access_token');
                 const currentUserId = localStorage.getItem('user_id');
                 const currentRefreshToken = localStorage.getItem('refresh_token');
@@ -5456,9 +5464,14 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
         },
         // on_error: ошибка при импорте
         [this](std::string body, std::string error, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export filament presets. Error: " << error 
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export filament presets. Error: " << error
                                     << ", Status: " << http_status;
-            
+
+            // КРИТИЧНО: сбрасываем флаг СРАЗУ в error callback, не через CallAfter
+            // Иначе при проблемах с WebView флаг залипнет навсегда
+            finish_export_operation();
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export error";
+
             wxString error_msg;
             if (http_status == 401) {
                 error_msg = _L("Your session has expired. Please login again.");
@@ -5471,15 +5484,12 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
             } else {
                 error_msg = wxString::Format(_L("Failed to export filament presets: %s"), wxString::FromUTF8(error.c_str()));
             }
-            
+
             CallAfter([this, error_msg, http_status]() {
                 show_notification_in_webview(
                     error_msg,
                     http_status == 401 || http_status == 403 ? "warning" : "error"
                 );
-                // Сбрасываем флаг после ошибки экспорта
-                finish_export_operation();
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export error";
             });
         }
     );
@@ -5566,14 +5576,17 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
                 bool allow_print_import = user_json.value("allow_print_profiles_import", true);
 
                 if (!allow_printer_import && !allow_print_import) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Both printer and print profiles export disabled in user settings";
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Both printer and print profiles export disabled in user settings (user preference)";
                     m_is_syncing.store(false);
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Printer profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings."),
-                            "warning"
-                        );
-                    });
+                    if (!m_export_disabled_notified) {
+                        m_export_disabled_notified = true;
+                        CallAfter([this]() {
+                            show_notification_in_webview(
+                                _L("Printer and print profiles export is disabled in your FilamentHub settings."),
+                                "info"
+                            );
+                        });
+                    }
                     return;
                 }
 

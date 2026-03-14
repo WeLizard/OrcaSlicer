@@ -24645,17 +24645,6 @@ msgstr "Печать (Print Profiles)"
 msgid "All (All Presets)"
 msgstr "Всё (All Presets)"
 
-#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
-msgid "filaments"
-msgstr "филаменты"
-
-#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
-msgid "printers"
-msgstr "принтеры"
-
-#: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
-msgid "prints"
-msgstr "печать"
 
 #: src/slic3r/GUI/FilamentHub/FilamentHubPanel.cpp
 msgid "Synchronization of %s completed successfully"

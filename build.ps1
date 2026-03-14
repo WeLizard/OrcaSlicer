@@ -42,6 +42,24 @@ function Set-BaseVersion {
 
 $Version = Get-FHVersion
 
+function Get-UpstreamVersion {
+    # Read SoftFever_VERSION from upstream/main version.inc (source of truth)
+    try {
+        $content = (& git show "upstream/main:version.inc" 2>$null) | Out-String
+        if ($LASTEXITCODE -eq 0 -and $content -match 'set\(SoftFever_VERSION\s+"([^"]+)"\)') {
+            return $Matches[1]
+        }
+    } catch {}
+    # Fallback: latest stable tag
+    try {
+        $tag = git tag -l "v*" --sort=-version:refname 2>$null |
+            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Select-Object -First 1
+        if ($tag) { return $tag }
+    } catch {}
+    return "unknown"
+}
+
 # ============================================================
 # FilamentHub source files (touch before build to force recompile)
 # ============================================================
@@ -998,6 +1016,10 @@ function Check-BuildStatus {
         Write-Host "$($changes.Lines) uncommitted changes" -ForegroundColor Yellow
     }
 
+    $upstreamVer = Get-UpstreamVersion
+    Write-Host "  Upstream ver:  " -NoNewline
+    Write-Host "$upstreamVer" -ForegroundColor DarkCyan
+
     Write-Host "  Upstream:      " -NoNewline
     $behind = git rev-list --count "HEAD..upstream/main" 2>$null
     if ($LASTEXITCODE -eq 0 -and $behind -gt 0) {
@@ -1075,8 +1097,11 @@ function Show-Menu {
     Write-Host " OrcaSlicer FilamentHub Edition - Builder   " -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host " Current Version: " -NoNewline
+    $upstreamVer = Get-UpstreamVersion
+    Write-Host " FH Version:       " -NoNewline
     Write-Host "$Version" -ForegroundColor Yellow
+    Write-Host " Upstream (official): " -NoNewline
+    Write-Host "$upstreamVer" -ForegroundColor DarkCyan
     Write-Host " Dir: $OrcaDir" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host " --- Quick Build (deps exist) ---" -ForegroundColor Green

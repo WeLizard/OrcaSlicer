@@ -5133,10 +5133,13 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
         // Черновики (active=false) - это понятие FilamentHub, а не OrcaSlicer
         // Проверка active выполняется на бэкенде при импорте из OrcaSlicer
         
-        // Пропускаем пресеты с постфиксом [FilamentHub] (они уже синхронизированы)
-        // Но можно экспортировать их тоже, если пользователь хочет обновить
-        // Для MVP экспортируем все пользовательские пресеты
-        
+        // Пропускаем пресеты с постфиксом [FilamentHub] — они пришли с сервера,
+        // сервер является источником истины для них. Обратная отправка портит имена.
+        if (preset.name.find(" [FilamentHub]") != std::string::npos) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [FilamentHub] preset from export: " << preset.name;
+            continue;
+        }
+
         try {
             // Получаем JSON конфигурацию пресета
             nlohmann::json orcaslicer_json = get_config_json(preset.config);
@@ -5661,6 +5664,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export printer profiles";
+        finish_export_operation();
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -5669,7 +5673,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
         });
         return;
     }
-    
+
     // Получаем все пользовательские printer profiles (не системные)
     PresetCollection& printers = bundle->printers;
     std::vector<nlohmann::json> profiles_json;
@@ -5677,16 +5681,22 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
     int profile_count = 0;
     for (auto it = printers.begin(); it != printers.end(); ++it) {
         const Preset& preset = *it;
-        
+
         // Пропускаем системные пресеты
         if (preset.is_system) {
             continue;
         }
-        
+
+        // Пропускаем пресеты [FilamentHub] — сервер является источником истины
+        if (preset.name.find(" [FilamentHub]") != std::string::npos) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [FilamentHub] printer preset from export: " << preset.name;
+            continue;
+        }
+
         try {
             // Получаем JSON конфигурацию пресета
             nlohmann::json orcaslicer_json = get_config_json(preset.config);
-            
+
             // Читаем оригинальный JSON файл для извлечения метаданных FilamentHub
             // Это необходимо, так как get_config_json() извлекает только известные опции,
             // а наши метки fhub_id, fhub_source не сохраняются в preset.config
@@ -5962,6 +5972,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
     
     if (profiles_json.empty()) {
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: No user printer profiles to export";
+        finish_export_operation();
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("No user printer profiles to export."),
@@ -6289,6 +6300,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
     PresetBundle* bundle = wxGetApp().preset_bundle;
     if (bundle == nullptr) {
         BOOST_LOG_TRIVIAL(error) << "FilamentHub: preset_bundle is null, cannot export print profiles";
+        finish_export_operation();
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("Preset bundle not available. Please try again."),
@@ -6306,16 +6318,22 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
     int profile_count = 0;
     for (auto it = prints.begin(); it != prints.end(); ++it) {
         const Preset& preset = *it;
-        
+
         // Пропускаем системные пресеты
         if (preset.is_system) {
             continue;
         }
-        
+
+        // Пропускаем пресеты [FilamentHub] — сервер является источником истины
+        if (preset.name.find(" [FilamentHub]") != std::string::npos) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [FilamentHub] print preset from export: " << preset.name;
+            continue;
+        }
+
         try {
             // Получаем JSON конфигурацию пресета
             nlohmann::json orcaslicer_json = get_config_json(preset.config);
-            
+
             // Читаем оригинальный JSON файл для извлечения метаданных FilamentHub
             // Это необходимо, так как get_config_json() извлекает только известные опции,
             // а наши метки fhub_id, fhub_source не сохраняются в preset.config
@@ -6532,6 +6550,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
     
     if (profiles_json.empty()) {
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: No user print profiles to export";
+        finish_export_operation();
         CallAfter([this]() {
             show_notification_in_webview(
                 _L("No user print profiles to export."),

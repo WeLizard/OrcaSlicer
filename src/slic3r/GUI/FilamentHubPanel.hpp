@@ -28,8 +28,8 @@
  * =============================================================================
  */
 
-#ifndef __FILAMENTHUB_PANEL_HPP__
-#define __FILAMENTHUB_PANEL_HPP__
+#ifndef FILAMENTHUB_PANEL_HPP
+#define FILAMENTHUB_PANEL_HPP
 
 // Include nlohmann/json первым (header-only library)
 #include <nlohmann/json.hpp>
@@ -596,8 +596,6 @@ private:
     Button* m_login_button { nullptr }; // Login button (only if not logged in)
     Button* m_logout_button { nullptr }; // Logout button (only if logged in)
     Button* m_settings_button { nullptr }; // Settings button for URLs
-    Button* m_notifications_button { nullptr }; // Notifications button (only if logged in)
-    wxStaticText* m_notifications_badge { nullptr }; // Badge showing unread notifications count
 
     Button* m_refresh_button { nullptr }; // Refresh/Reload button
     std::atomic<bool> m_is_syncing { false }; // Is sync in progress (atomic for thread safety)
@@ -676,4 +674,4 @@ private:
 
 }} // namespace Slic3r::GUI
 
-#endif // __FILAMENTHUB_PANEL_HPP__
+#endif // FILAMENTHUB_PANEL_HPP

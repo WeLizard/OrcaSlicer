@@ -276,8 +276,6 @@ void FilamentHubPanel::init()
     // Notifications button - REMOVED from C++ UI
     // Notifications are now displayed in WebView as a floating button (bell icon)
     // This keeps UI consistent with the web version
-    m_notifications_button = nullptr; // Not used anymore
-    m_notifications_badge = nullptr; // Not used anymore
     
     // Login button - redirects to login page in WebView (user logs in there)
     m_login_button = new Button(m_info_panel, _L("Login"));
@@ -1069,8 +1067,8 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
 
 void FilamentHubPanel::synchronize_presets(bool force_full_sync)
 {
-    static int sync_call_counter = 0;
-    sync_call_counter++;
+    static unsigned int sync_call_counter = 0;
+    if (sync_call_counter < UINT_MAX) sync_call_counter++;
     
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== [SYNC START] synchronize_presets() CALLED (call #" << sync_call_counter << ") ==========";
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 1] force_full_sync=" << (force_full_sync ? "true" : "false");
@@ -2126,18 +2124,25 @@ void FilamentHubPanel::remove_preset_mapping(int preset_id)
 std::vector<int> FilamentHubPanel::get_all_mapped_preset_ids()
 {
     std::vector<int> preset_ids;
-    
+
     if (wxGetApp().app_config == nullptr) {
         return preset_ids;
     }
-    
-    // Get all keys from filamenthub section
-    // AppConfig doesn't directly expose section keys, so we need to work around
-    // For now, return empty - proper implementation would need to iterate through section
-    // This is a limitation of AppConfig API
-    
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: get_all_mapped_preset_ids - TODO: implement proper iteration";
-    
+
+    const std::string prefix = CONFIG_KEY_PRESET_MAPPING + "_";
+    const auto& section = wxGetApp().app_config->get_section(CONFIG_SECTION_FILAMENTHUB);
+
+    for (const auto& [key, value] : section) {
+        if (key.rfind(prefix, 0) == 0 && !value.empty()) {
+            try {
+                int preset_id = std::stoi(key.substr(prefix.size()));
+                preset_ids.push_back(preset_id);
+            } catch (...) {
+                // Skip malformed keys
+            }
+        }
+    }
+
     return preset_ids;
 }
 
@@ -3449,11 +3454,7 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         // Show logged-in UI elements
         m_profile_button->Show();
         m_preset_count_label->Show();
-        m_sync_button->Show(); // ВАЖНО: Показываем кнопку синхронизации
-        // m_notifications_button removed - notifications are in WebView now
-        // if (m_notifications_button != nullptr) {
-        //     m_notifications_button->Show();
-        // }
+        m_sync_button->Show();
         m_logout_button->Show();
         
         // Update unread notifications count
@@ -3473,13 +3474,6 @@ void FilamentHubPanel::update_ui_for_login_state(bool is_logged_in)
         m_profile_button->Hide();
         m_preset_count_label->Hide();
         m_sync_button->Hide(); // ВАЖНО: Скрываем кнопку синхронизации
-        // m_notifications_button removed - notifications are in WebView now
-        // if (m_notifications_button != nullptr) {
-        //     m_notifications_button->Hide();
-        // }
-        // if (m_notifications_badge != nullptr) {
-        //     m_notifications_badge->Hide();
-        // }
         m_logout_button->Hide();
         
         // Reset unread notifications count
@@ -3833,10 +3827,6 @@ void FilamentHubPanel::update_async_ui()
         m_refresh_button->Enable(!busy);
     }
 
-    // m_notifications_button removed - notifications are in WebView now
-    // if (m_notifications_button != nullptr) {
-    //     m_notifications_button->Enable(!busy);
-    // }
 
 
 

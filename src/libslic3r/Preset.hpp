@@ -643,6 +643,12 @@ public:
     {
         return const_cast<PresetCollection*>(this)->find_preset2(name, auto_match);
     }
+    // Resolve a parent preset by its stable cloud/system identifier when the legacy inherits name is stale.
+    Preset* find_preset_by_setting_id(const std::string& setting_id, bool require_base_preset = true);
+    const Preset* find_preset_by_setting_id(const std::string& setting_id, bool require_base_preset = true) const
+    {
+        return const_cast<PresetCollection*>(this)->find_preset_by_setting_id(setting_id, require_base_preset);
+    }
     size_t first_visible_idx() const;
     // Return the index of the first visible, compatible, system base preset
     // matching the given filament_type.  Falls back to base type, then any visible.

@@ -1090,6 +1090,20 @@ bool PresetBundle::import_json_presets(PresetsConfigSubstitutions &            s
             ConfigOptionString *option_str = dynamic_cast<ConfigOptionString *>(inherits_config);
             inherits_value                 = option_str->value;
             inherit_preset                 = collection->find_preset2(inherits_value);
+            if (inherit_preset == nullptr) {
+                auto base_id_it = key_values.find(BBL_JSON_KEY_BASE_ID);
+                if (base_id_it != key_values.end()) {
+                    inherit_preset = collection->find_preset_by_setting_id(base_id_it->second);
+                    if (inherit_preset != nullptr) {
+                        option_str->value = inherit_preset->name;
+                        BOOST_LOG_TRIVIAL(info)
+                            << __FUNCTION__ << " restored import parent by base_id for " << name
+                            << ": legacy inherits=\"" << inherits_value
+                            << "\", resolved=\"" << inherit_preset->name
+                            << "\", base_id=" << base_id_it->second;
+                    }
+                }
+            }
         }
         if (inherit_preset) {
             new_config = inherit_preset->config;

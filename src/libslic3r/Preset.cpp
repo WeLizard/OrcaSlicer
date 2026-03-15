@@ -1331,6 +1331,17 @@ void PresetCollection::load_presets(
                         std::string inherits_value = option_str->value;
                         // Orca: try to find if the parent preset has been renamed
                         inherit_preset = this->find_preset2(inherits_value);
+                        if (inherit_preset == nullptr && !preset.base_id.empty()) {
+                            inherit_preset = this->find_preset_by_setting_id(preset.base_id);
+                            if (inherit_preset != nullptr) {
+                                option_str->value = inherit_preset->name;
+                                BOOST_LOG_TRIVIAL(info)
+                                    << __FUNCTION__ << " restored parent by base_id for " << preset.name
+                                    << ": legacy inherits=\"" << inherits_value
+                                    << "\", resolved=\"" << inherit_preset->name
+                                    << "\", base_id=" << preset.base_id;
+                            }
+                        }
 
                     } else {
                         ;
@@ -1904,6 +1915,17 @@ bool PresetCollection::load_user_preset(std::string name, std::map<std::string, 
                 option_str->value = inherits_value;
             }*/
             inherit_preset = this->find_preset(inherits_value, false, true);
+            if (inherit_preset == nullptr && !cloud_base_id.empty() && cloud_base_id != "null") {
+                inherit_preset = this->find_preset_by_setting_id(cloud_base_id);
+                if (inherit_preset != nullptr) {
+                    option_str->value = inherit_preset->name;
+                    BOOST_LOG_TRIVIAL(info)
+                        << __FUNCTION__ << " restored cloud parent by base_id for " << name
+                        << ": legacy inherits=\"" << inherits_value
+                        << "\", resolved=\"" << inherit_preset->name
+                        << "\", base_id=" << cloud_base_id;
+                }
+            }
         }
         const Preset& default_preset = this->default_preset_for(cloud_config);
         if (inherit_preset) {
@@ -2786,6 +2808,22 @@ Preset* PresetCollection::find_preset2(const std::string& name, bool auto_match/
     }
 
     return preset;
+}
+
+Preset* PresetCollection::find_preset_by_setting_id(const std::string& setting_id, bool require_base_preset/* = true */)
+{
+    if (setting_id.empty() || setting_id == "null")
+        return nullptr;
+
+    for (auto &preset : m_presets) {
+        if (preset.setting_id != setting_id)
+            continue;
+        if (require_base_preset && !is_base_preset(preset))
+            continue;
+        return &preset;
+    }
+
+    return nullptr;
 }
 
 // Return index of the first visible preset. Certainly at least the '- default -' preset shall be visible.

@@ -3103,17 +3103,20 @@ void FilamentHubPanel::process_preset_import_queue()
         }
         
         int final_user_id = user_id_for_sync; // Захватываем для lambda
+        int final_synced_count = m_synced_count;
+        int final_error_count = m_error_count;
+        bool sync_completed_without_errors = final_error_count == 0;
         
-        CallAfter([this, final_user_id]() {
+        CallAfter([this, final_user_id, final_synced_count, final_error_count, sync_completed_without_errors]() {
             // ВАЖНО: Вызываем load_current_presets() только один раз после завершения импорта всех пресетов
             // Это обновит UI и предотвратит множественные перезагрузки всех пресетов (включая не-FilamentHub)
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] All presets imported. Calling load_current_presets() once...";
             wxGetApp().load_current_presets();
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] load_current_presets() completed.";
             
-            // КРИТИЧНО: Обновляем last_sync_time ПОСЛЕ успешного импорта всех пресетов
-            // Это предотвращает потерю пресетов при прерывании синхронизации
-            if (final_user_id > 0) {
+            // КРИТИЧНО: Обновляем last_sync_time только после ПОЛНОСТЬЮ успешного импорта без ошибок.
+            // Иначе следующий incremental sync пропустит пресеты, которые не импортировались.
+            if (sync_completed_without_errors && final_user_id > 0) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] Updating last_sync_time after successful import...";
                 std::time_t now = std::time(nullptr);
                 std::stringstream ss;
@@ -3121,6 +3124,10 @@ void FilamentHubPanel::process_preset_import_queue()
                 std::string current_time = ss.str();
                 save_last_sync_time(final_user_id, current_time, SyncTimestampType::Filament);
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE FINISH] Saved last_sync_time=" << current_time;
+            } else if (!sync_completed_without_errors) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [QUEUE FINISH] Filament sync completed with "
+                                           << final_error_count
+                                           << " errors. last_sync_time was NOT updated so failed presets can retry.";
             }
             
             // Сбрасываем флаг защиты от зацикливания после успешной синхронизации
@@ -3129,7 +3136,7 @@ void FilamentHubPanel::process_preset_import_queue()
             m_active_syncs--;
             m_is_syncing.store(false);
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed. Active syncs: " << m_active_syncs;
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync summary - Synced: " << m_synced_count << ", Errors: " << m_error_count;
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync summary - Synced: " << final_synced_count << ", Errors: " << final_error_count;
             
             // Hide progress bar
             if (m_sync_progress) {
@@ -3151,7 +3158,12 @@ void FilamentHubPanel::process_preset_import_queue()
             // (так как после синхронизации могут появиться новые уведомления)
             update_unread_notifications_count();
             
-            // Экспортируем printer и print profiles на сервер (после завершения sync filament presets)
+            if (!sync_completed_without_errors) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Skipping printer/print auto-export because filament sync had import errors.";
+                return;
+            }
+
+            // Экспортируем printer и print profiles на сервер только после полностью успешного filament sync.
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Checking user permissions before printer/print profiles export (after filament presets)...";
             std::string token;
             int uid = 0;

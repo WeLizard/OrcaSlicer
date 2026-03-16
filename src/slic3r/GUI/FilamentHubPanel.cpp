@@ -1495,9 +1495,27 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 // ВАЖНО: Логируем результат обнаружения удалённых пресетов на уровне error, чтобы гарантировать видимость
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size() 
                                        << " deleted presets (deleted locally, but exist on server)";
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size() 
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size()
                                        << " deleted presets (deleted locally, but exist on server)";
-                
+
+                // 5.5. Очистка orphaned маппингов (только при полной синхронизации)
+                // При инкрементальной синхронизации сервер возвращает только обновлённые пресеты,
+                // поэтому нельзя определить, какие маппинги устарели.
+                if (force_full_sync) {
+                    std::vector<int> all_mapped_ids = get_all_mapped_preset_ids();
+                    int orphaned_count = 0;
+                    for (int mapped_id : all_mapped_ids) {
+                        if (server_preset_ids.find(mapped_id) == server_preset_ids.end()) {
+                            remove_preset_mapping(mapped_id);
+                            orphaned_count++;
+                        }
+                    }
+                    if (orphaned_count > 0) {
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.3] Cleaned up " << orphaned_count
+                                               << " orphaned preset mappings";
+                    }
+                }
+
                 // 6. Собираем пресеты в очередь для обработки после завершения callback
                 // ВАЖНО: НЕ вызываем import_preset_silent здесь, чтобы избежать deadlock!
                 // Вместо этого добавляем пресеты в очередь и обработаем их позже через CallAfter
@@ -1846,6 +1864,31 @@ void FilamentHubPanel::show_notification_in_webview(const wxString& message, con
     WebView::RunScript(m_browser, js_code);
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sent notification to WebView: type=" << type.ToUTF8() 
                             << ", message=" << message.ToUTF8();
+}
+
+void FilamentHubPanel::send_command_to_webview(const std::string& command)
+{
+    if (m_browser == nullptr) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Cannot send command '" << command << "', WebView is null";
+        return;
+    }
+
+    nlohmann::json msg;
+    msg["command"] = command;
+
+    wxString json_wx = wxString::FromUTF8(msg.dump().c_str());
+    wxString js_code = wxString(R"(
+            (function() {
+                try {
+                    window.postMessage()") + json_wx + wxString(R"(, '*');
+                } catch (e) {
+                    console.error('FilamentHub: Error sending command:', e);
+                }
+            })();
+        )");
+
+    WebView::RunScript(m_browser, js_code);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sent command to WebView: " << command;
 }
 
 void FilamentHubPanel::OnClose(wxCloseEvent& evt)
@@ -2377,7 +2420,7 @@ bool FilamentHubPanel::delete_preset_from_filamenthub(int preset_id, const std::
 
 std::string FilamentHubPanel::ensure_filamenthub_postfix(const std::string& preset_name)
 {
-    std::string postfix = " [FilamentHub]";
+    std::string postfix = " [fh]";
     
     // Проверяем, есть ли уже постфикс
     if (preset_name.size() >= postfix.size()) {
@@ -2578,7 +2621,7 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                 nlohmann::json profile_json = nlohmann::json::parse(json_content);
                 BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 6.1] JSON parsed successfully";
                 
-                // Добавляем постфикс [FilamentHub] к имени пресета
+                // Добавляем постфикс [fh] к имени пресета
                 BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [IMPORT STEP 7] Processing preset name...";
                 std::string original_name = profile_json.value("name", preset_name);
                 std::string new_name = ensure_filamenthub_postfix(original_name);
@@ -2684,7 +2727,7 @@ bool FilamentHubPanel::import_preset_silent(int preset_id, const std::string& pr
                         std::unique_lock<std::mutex> lock(result->mutex);
                         if (success || !import_result.empty()) {
                             // Импорт успешен (или пресет уже был импортирован)
-                            // ВАЖНО: Используем preset_name_to_save (имя пресета с постфиксом [FilamentHub]),
+                            // ВАЖНО: Используем preset_name_to_save (имя пресета с постфиксом [fh]),
                             // а НЕ import_result, так как import_result может содержать пути к файлам
                             std::string actual_preset_name = preset_name_to_save;
                             
@@ -3133,11 +3176,14 @@ void FilamentHubPanel::process_preset_import_queue()
             // Сбрасываем флаг защиты от зацикливания после успешной синхронизации
             m_full_sync_attempted.store(false);
             
+            // Оповещаем WebView фронтенд что данные изменились после импорта
+            send_command_to_webview("sync_complete");
+
             m_active_syncs--;
             m_is_syncing.store(false);
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed. Active syncs: " << m_active_syncs;
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync summary - Synced: " << final_synced_count << ", Errors: " << final_error_count;
-            
+
             // Hide progress bar
             if (m_sync_progress) {
                 m_sync_progress->Hide();
@@ -4552,7 +4598,7 @@ bool FilamentHubPanel::import_printer_profile_silent(int profile_id, const std::
                 // Парсим JSON чтобы добавить постфикс к имени
                 nlohmann::json profile_json = nlohmann::json::parse(json_content);
                 
-                // Добавляем постфикс [FilamentHub] к имени профиля
+                // Добавляем постфикс [fh] к имени профиля
                 std::string original_name = profile_json.value("name", profile_name);
                 std::string new_name = ensure_filamenthub_postfix(original_name);
                 profile_json["name"] = new_name;
@@ -4612,9 +4658,9 @@ bool FilamentHubPanel::import_printer_profile_silent(int profile_id, const std::
                 std::lock_guard<std::mutex> lock(result->mutex);
                 if (success || !import_result.empty()) {
                     // Импорт успешен
-                    // ВАЖНО: Используем new_name (имя профиля с постфиксом [FilamentHub]),
+                    // ВАЖНО: Используем new_name (имя профиля с постфиксом [fh]),
                     // а НЕ import_result, так как import_result может содержать пути к файлам
-                    // new_name уже содержит правильное имя профиля: original_name + " [FilamentHub]"
+                    // new_name уже содержит правильное имя профиля: original_name + " [fh]"
                     std::string actual_profile_name = new_name;
                     
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profile imported successfully (name: " << actual_profile_name << ")";
@@ -4689,7 +4735,7 @@ bool FilamentHubPanel::import_print_profile_silent(int profile_id, const std::st
                 // Парсим JSON чтобы добавить постфикс к имени
                 nlohmann::json profile_json = nlohmann::json::parse(json_content);
                 
-                // Добавляем постфикс [FilamentHub] к имени профиля
+                // Добавляем постфикс [fh] к имени профиля
                 std::string original_name = profile_json.value("name", profile_name);
                 std::string new_name = ensure_filamenthub_postfix(original_name);
                 profile_json["name"] = new_name;
@@ -4749,9 +4795,9 @@ bool FilamentHubPanel::import_print_profile_silent(int profile_id, const std::st
                 std::lock_guard<std::mutex> lock(result->mutex);
                 if (success || !import_result.empty()) {
                     // Импорт успешен
-                    // ВАЖНО: Используем new_name (имя профиля с постфиксом [FilamentHub]),
+                    // ВАЖНО: Используем new_name (имя профиля с постфиксом [fh]),
                     // а НЕ import_result, так как import_result может содержать пути к файлам
-                    // new_name уже содержит правильное имя профиля: original_name + " [FilamentHub]"
+                    // new_name уже содержит правильное имя профиля: original_name + " [fh]"
                     std::string actual_profile_name = new_name;
                     
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profile imported successfully (name: " << actual_profile_name << ")";
@@ -5133,10 +5179,10 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
         // Черновики (active=false) - это понятие FilamentHub, а не OrcaSlicer
         // Проверка active выполняется на бэкенде при импорте из OrcaSlicer
         
-        // Пропускаем пресеты с постфиксом [FilamentHub] — они пришли с сервера,
+        // Пропускаем пресеты с постфиксом [fh] — они пришли с сервера,
         // сервер является источником истины для них. Обратная отправка портит имена.
-        if (preset.name.find(" [FilamentHub]") != std::string::npos) {
-            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [FilamentHub] preset from export: " << preset.name;
+        if (preset.name.find(" [fh]") != std::string::npos) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [fh] preset from export: " << preset.name;
             continue;
         }
 
@@ -5449,6 +5495,9 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Calling show_notification_in_webview() with warning message";
                         show_notification_in_webview(message, "warning");
                     }
+                    // Оповещаем WebView фронтенд что данные изменились — React обновит кэш
+                    send_command_to_webview("sync_complete");
+
                     // Сбрасываем флаг после завершения экспорта
                     finish_export_operation();
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] Reset m_is_syncing=false after notification #" << notification_counter;
@@ -5687,9 +5736,9 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
             continue;
         }
 
-        // Пропускаем пресеты [FilamentHub] — сервер является источником истины
-        if (preset.name.find(" [FilamentHub]") != std::string::npos) {
-            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [FilamentHub] printer preset from export: " << preset.name;
+        // Пропускаем пресеты [fh] — сервер является источником истины
+        if (preset.name.find(" [fh]") != std::string::npos) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [fh] printer preset from export: " << preset.name;
             continue;
         }
 
@@ -6324,9 +6373,9 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
             continue;
         }
 
-        // Пропускаем пресеты [FilamentHub] — сервер является источником истины
-        if (preset.name.find(" [FilamentHub]") != std::string::npos) {
-            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [FilamentHub] print preset from export: " << preset.name;
+        // Пропускаем пресеты [fh] — сервер является источником истины
+        if (preset.name.find(" [fh]") != std::string::npos) {
+            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Skipping [fh] print preset from export: " << preset.name;
             continue;
         }
 

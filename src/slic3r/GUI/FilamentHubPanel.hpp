@@ -172,6 +172,9 @@ private:
      */
     void show_notification_in_webview(const wxString& message, const wxString& type = "info");
 
+    /** Send a command to WebView frontend via postMessage (e.g. "sync_complete"). */
+    void send_command_to_webview(const std::string& command);
+
     /**
      * \brief Synchronize user presets from FilamentHub
      * 
@@ -410,7 +413,7 @@ private:
     );
     
     /**
-     * \brief Add [FilamentHub] postfix to preset name if not already present
+     * \brief Add [fh] postfix to preset name if not already present
      */
     std::string ensure_filamenthub_postfix(const std::string& preset_name);
     
@@ -428,7 +431,7 @@ private:
     /**
      * \brief Import preset from FilamentHub without UI dialogs (for sync)
      * 
-     * Downloads and imports a preset silently, adding [FilamentHub] postfix and saving mapping.
+     * Downloads and imports a preset silently, adding [fh] postfix and saving mapping.
      * 
      * \param preset_id Preset ID in FilamentHub
      * \param preset_name Preset name from FilamentHub
@@ -447,7 +450,7 @@ private:
      * as they may be overwritten by BambuLab system. Instead, we download the .info file from API.
      * 
      * \param preset_id Preset ID in FilamentHub
-     * \param preset_name Preset name in OrcaSlicer (with [FilamentHub] postfix)
+     * \param preset_name Preset name in OrcaSlicer (with [fh] postfix)
      * \param access_token JWT token for API access
      */
     void update_preset_info_file(int preset_id, const std::string& preset_name, const std::string& access_token);
@@ -455,7 +458,7 @@ private:
     /**
      * \brief Import printer profile from FilamentHub without UI dialogs (for sync)
      * 
-     * Downloads and imports a printer profile silently, adding [FilamentHub] postfix and saving mapping.
+     * Downloads and imports a printer profile silently, adding [fh] postfix and saving mapping.
      * 
      * \param profile_id Printer profile ID in FilamentHub
      * \param profile_name Printer profile name from FilamentHub
@@ -467,7 +470,7 @@ private:
     /**
      * \brief Import print profile from FilamentHub without UI dialogs (for sync)
      * 
-     * Downloads and imports a print profile silently, adding [FilamentHub] postfix and saving mapping.
+     * Downloads and imports a print profile silently, adding [fh] postfix and saving mapping.
      * 
      * \param profile_id Print profile ID in FilamentHub
      * \param profile_name Print profile name from FilamentHub

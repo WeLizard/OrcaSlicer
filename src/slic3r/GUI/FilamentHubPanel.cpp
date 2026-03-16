@@ -5363,6 +5363,130 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
         }
     }
     
+    // ========== ORPHANED PRESET SCANNER ==========
+    // Scan user filament directory for .json files that were not loaded by OrcaSlicer
+    // (e.g. presets with broken "inherits" — skipped at Preset.cpp load time)
+    {
+        // Build set of loaded preset names for comparison
+        std::set<std::string> loaded_names;
+        for (auto it = filaments.begin(); it != filaments.end(); ++it) {
+            loaded_names.insert(it->name);
+        }
+        // Also include default presets (index 0..m_num_default_presets-1)
+        for (size_t i = 0; i < filaments.num_default_presets(); ++i) {
+            loaded_names.insert(filaments.default_preset(i).name);
+        }
+
+        // Get user filament directory path from a loaded preset's file path,
+        // or reconstruct from data_dir if no presets are loaded
+        std::string filament_dir;
+        for (auto it = filaments.begin(); it != filaments.end(); ++it) {
+            if (!it->file.empty()) {
+                filament_dir = boost::filesystem::path(it->file).parent_path().string();
+                break;
+            }
+        }
+
+        int orphaned_count = 0;
+        if (!filament_dir.empty() && boost::filesystem::exists(filament_dir)) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scanning for orphaned presets in: " << filament_dir;
+
+            for (auto& dir_entry : boost::filesystem::directory_iterator(filament_dir)) {
+                if (!boost::filesystem::is_regular_file(dir_entry)) continue;
+
+                std::string filename = dir_entry.path().filename().string();
+                // Only process .json files, skip .info and others
+                if (filename.size() < 6 || filename.substr(filename.size() - 5) != ".json") continue;
+
+                // Skip "base" subdirectory entries (shouldn't appear here, but safety)
+                std::string stem = dir_entry.path().stem().string();
+
+                // Skip if this preset was loaded successfully
+                if (loaded_names.count(stem) > 0) continue;
+
+                // Skip [fh] presets
+                if (stem.find(" [fh]") != std::string::npos) continue;
+
+                // This is an orphaned preset — read its JSON directly
+                try {
+                    nlohmann::json orphan_json;
+                    boost::filesystem::ifstream ifs(dir_entry.path());
+                    if (!ifs.is_open()) continue;
+                    ifs >> orphan_json;
+                    ifs.close();
+
+                    // Build preset_data in the same format as normal export
+                    nlohmann::json preset_data;
+                    preset_data["name"] = stem;
+                    preset_data["source"] = "orcaslicer";
+                    preset_data["active"] = false;
+                    preset_data["orphaned"] = true;
+                    preset_data["orphaned_reason"] = "parent_not_found";
+
+                    // Extract inherits
+                    if (orphan_json.contains("inherits") && orphan_json["inherits"].is_string()) {
+                        preset_data["original_inherits"] = orphan_json["inherits"].get<std::string>();
+                    }
+
+                    // Extract available fields into orcaslicer_settings
+                    // Pass the entire JSON as orcaslicer_settings — backend will parse it
+                    preset_data["orcaslicer_settings"] = orphan_json;
+
+                    // Try to extract basic metadata
+                    if (orphan_json.contains("filament_settings_id")) {
+                        auto& fsi = orphan_json["filament_settings_id"];
+                        if (fsi.is_array() && !fsi.empty())
+                            preset_data["external_id"] = fsi[0].get<std::string>();
+                        else if (fsi.is_string())
+                            preset_data["external_id"] = fsi.get<std::string>();
+                    }
+
+                    // Extract fhub metadata if present
+                    if (orphan_json.contains("fhub_id"))
+                        preset_data["fhub_id"] = parse_fhub_id(orphan_json["fhub_id"]);
+                    if (orphan_json.contains("fhub_draft_id"))
+                        preset_data["orcaslicer_settings"]["fhub_draft_id"] = orphan_json["fhub_draft_id"];
+
+                    preset_data["filament_name"] = stem;
+
+                    // Read .info file if exists
+                    boost::filesystem::path info_path = dir_entry.path();
+                    info_path.replace_extension(".info");
+                    if (boost::filesystem::exists(info_path)) {
+                        try {
+                            boost::filesystem::ifstream info_ifs(info_path);
+                            if (info_ifs.is_open()) {
+                                std::stringstream buf;
+                                buf << info_ifs.rdbuf();
+                                preset_data["info_content"] = buf.str();
+                                info_ifs.close();
+                            }
+                        } catch (...) {}
+                    }
+
+                    presets_json.push_back(preset_data);
+                    orphaned_count++;
+                    preset_count++;
+
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found orphaned preset: " << stem
+                                           << " (inherits: "
+                                           << (preset_data.contains("original_inherits")
+                                                   ? preset_data["original_inherits"].get<std::string>()
+                                                   : "unknown")
+                                           << ")";
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to read orphaned preset file "
+                                              << dir_entry.path().string() << ": " << e.what();
+                }
+            }
+
+            if (orphaned_count > 0) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Found " << orphaned_count << " orphaned presets";
+            }
+        }
+    }
+    // ========== END ORPHANED PRESET SCANNER ==========
+
     if (presets_json.empty()) {
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: No user filament presets to export";
         CallAfter([this]() {
@@ -5373,7 +5497,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
         });
         return;
     }
-    
+
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Exported " << preset_count << " filament presets to JSON";
     
     // Лимит на количество профилей (50 для MVP)

@@ -5364,8 +5364,9 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
     }
     
     // ========== ORPHANED PRESET SCANNER ==========
-    // Scan user filament directory for .json files that were not loaded by OrcaSlicer
+    // Recursively scan user filament directory for .json files not loaded by OrcaSlicer
     // (e.g. presets with broken "inherits" — skipped at Preset.cpp load time)
+    // Includes base/ subdirectory where printer-specific filament presets live
     {
         // Build set of loaded preset names for comparison
         std::set<std::string> loaded_names;
@@ -5389,16 +5390,15 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
 
         int orphaned_count = 0;
         if (!filament_dir.empty() && boost::filesystem::exists(filament_dir)) {
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scanning for orphaned presets in: " << filament_dir;
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scanning for orphaned presets in: " << filament_dir << " (recursive)";
 
-            for (auto& dir_entry : boost::filesystem::directory_iterator(filament_dir)) {
+            for (auto& dir_entry : boost::filesystem::recursive_directory_iterator(filament_dir)) {
                 if (!boost::filesystem::is_regular_file(dir_entry)) continue;
 
                 std::string filename = dir_entry.path().filename().string();
                 // Only process .json files, skip .info and others
                 if (filename.size() < 6 || filename.substr(filename.size() - 5) != ".json") continue;
 
-                // Skip "base" subdirectory entries (shouldn't appear here, but safety)
                 std::string stem = dir_entry.path().stem().string();
 
                 // Skip if this preset was loaded successfully
@@ -5473,6 +5473,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                                            << (preset_data.contains("original_inherits")
                                                    ? preset_data["original_inherits"].get<std::string>()
                                                    : "unknown")
+                                           << ", path: " << dir_entry.path().string()
                                            << ")";
                 } catch (const std::exception& e) {
                     BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to read orphaned preset file "

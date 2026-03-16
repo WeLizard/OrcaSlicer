@@ -5592,7 +5592,7 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
 
                     // Сбрасываем флаг после завершения экспорта
                     finish_export_operation();
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] Reset m_is_syncing=false after notification #" << notification_counter;
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] Reset m_is_syncing=false, synced=" << success_count << " errors=" << error_count;
                 });
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what() 
@@ -7059,7 +7059,7 @@ void FilamentHubPanel::scan_orphaned_presets_internal(const std::string& access_
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: scan_orphaned_presets_internal() starting";
 
     PresetBundle* bundle = wxGetApp().preset_bundle;
-    const auto& filaments = bundle->filaments;
+    auto& filaments = bundle->filaments;
 
     // Build set of loaded preset names for comparison
     std::set<std::string> loaded_names;

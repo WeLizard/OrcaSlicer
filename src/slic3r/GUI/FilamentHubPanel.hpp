@@ -270,6 +270,15 @@ private:
      */
     void export_profiles_to_filamenthub();
 
+    /**
+     * \brief Scan for orphaned filament presets (on-demand, triggered by user)
+     *
+     * Recursively scans the user filament directory for .json files that were
+     * not loaded by OrcaSlicer (broken inherits). Found presets are sent to
+     * FilamentHub as drafts with orphaned=true flag.
+     */
+    void scan_orphaned_presets();
+
 private:
     /**
      * \brief Internal method to export filament presets (called after permission check)
@@ -294,6 +303,10 @@ private:
      * \param api_base_url API base URL
      */
     void export_print_profiles_to_filamenthub_internal(const std::string& access_token, const std::string& api_base_url);
+
+    /** Internal: scan orphaned presets and send to server. */
+    void scan_orphaned_presets_internal(const std::string& access_token, const std::string& api_base_url);
+
     /**
      * \brief Save access token and user_id to AppConfig
      */

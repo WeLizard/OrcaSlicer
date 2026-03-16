@@ -626,6 +626,7 @@ private:
     int m_error_count { 0 }; // Counter for failed presets
     int m_total_presets_to_sync { 0 }; // Total number of presets to sync
     bool m_processing_preset_queue { false }; // Is preset queue being processed
+    std::vector<std::string> m_sync_detail_lines; // Per-preset sync details (for dev mode notifications)
     bool m_export_disabled_notified { false }; // Show "export disabled" notice only once per session
     
     // Constants for AppConfig keys

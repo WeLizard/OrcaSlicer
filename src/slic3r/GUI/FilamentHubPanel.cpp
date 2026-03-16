@@ -53,6 +53,7 @@
 #include <algorithm>
 #include <ctime>
 #include <chrono>
+#include <map>
 #include <set>
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
@@ -1533,6 +1534,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                     m_total_presets_to_sync = presets.size();
                     m_synced_count = 0;
                     m_error_count = 0;
+                    m_sync_detail_lines.clear();
                     
                     for (const auto& preset_json : presets) {
                         int preset_id = preset_json["id"];
@@ -3184,6 +3186,25 @@ void FilamentHubPanel::process_preset_import_queue()
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed. Active syncs: " << m_active_syncs;
             BOOST_LOG_TRIVIAL(info) << "FilamentHub: Sync summary - Synced: " << final_synced_count << ", Errors: " << final_error_count;
 
+            // Уведомление о результатах импорта
+            {
+                bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
+                wxString message;
+                if (sync_completed_without_errors) {
+                    message = wxString::Format(_L("Synced %d filament presets."), final_synced_count);
+                } else {
+                    message = wxString::Format(_L("Synced %d filament presets: %d successful, %d errors."),
+                                              final_synced_count + final_error_count, final_synced_count, final_error_count);
+                }
+                if (dev_mode && !m_sync_detail_lines.empty()) {
+                    message += "\n";
+                    for (const auto& line : m_sync_detail_lines) {
+                        message += "\n" + wxString::FromUTF8(line.c_str());
+                    }
+                }
+                show_notification_in_webview(message, sync_completed_without_errors ? "success" : "warning");
+            }
+
             // Hide progress bar
             if (m_sync_progress) {
                 m_sync_progress->Hide();
@@ -3269,9 +3290,11 @@ void FilamentHubPanel::process_preset_import_queue()
                     std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
                     if (success) {
                         m_synced_count++;
+                        m_sync_detail_lines.push_back(task.preset_name + " — OK");
                         BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Preset " << task.preset_id << " imported successfully.";
                     } else {
                         m_error_count++;
+                        m_sync_detail_lines.push_back(task.preset_name + " — ERROR");
                         BOOST_LOG_TRIVIAL(error) << "FilamentHub: [QUEUE] Failed to import preset " << task.preset_id << ".";
                     }
                     m_processing_preset_queue = false; // Allow next item to be processed
@@ -5426,34 +5449,54 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                 int error_count = 0;
                 int updated_count = 0;
                 int created_count = 0;
-                
+
+                // Строим маппинг external_id → name из исходных данных экспорта
+                std::map<std::string, std::string> ext_id_to_name;
+                for (const auto& p : presets_json) {
+                    std::string eid = p.value("external_id", "");
+                    std::string nm = p.value("name", "");
+                    if (!eid.empty() && !nm.empty()) {
+                        ext_id_to_name[eid] = nm;
+                    }
+                }
+
+                // Детализация для dev mode
+                std::vector<std::string> detail_lines;
+
                 for (const auto& result : response["results"]) {
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
-                    
+                    std::string message = result.value("message", "");
+
+                    // Имя пресета из маппинга
+                    std::string preset_name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
+
                     // Безопасно извлекаем fhub_id (может быть int или string)
                     int fhub_id = 0;
                     if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
                         fhub_id = parse_fhub_id(result["fhub_id"]);
                     }
-                    
+
                     if (status == "created") {
                         created_count++;
                         success_count++;
+                        detail_lines.push_back(preset_name + " — created");
                     } else if (status == "updated") {
                         updated_count++;
                         success_count++;
+                        detail_lines.push_back(preset_name + " — updated");
                     } else if (status == "error" || status == "skipped") {
                         error_count++;
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Preset " << external_id 
-                                                  << " import failed: " << result.value("message", "");
+                        detail_lines.push_back(preset_name + " — ERROR: " + message);
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Preset " << external_id
+                                                  << " import failed: " << message;
                     }
-                    
+
                     // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
                     if (fhub_id > 0 && !external_id.empty()) {
                         std::string mapping_key = CONFIG_KEY_PRESET_MAPPING + "_" + external_id;
                         app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id 
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id
                                                << " -> fhub_id=" << fhub_id;
                     }
                 }
@@ -5469,16 +5512,13 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                                        << ", Errors: " << error_count;
                 
                 // Показываем уведомление пользователю
-                CallAfter([this, success_count, error_count, created_count, updated_count]() {
-                    static int notification_counter = 0;
-                    notification_counter++;
-                    
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Showing export result notification";
-                    
+                CallAfter([this, success_count, error_count, created_count, updated_count, detail_lines]() {
+                    bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
+
                     wxString message;
                     if (error_count == 0) {
                         if (created_count > 0 && updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d filament presets: %d created, %d updated."), 
+                            message = wxString::Format(_L("Successfully exported %d filament presets: %d created, %d updated."),
                                                       success_count, created_count, updated_count);
                         } else if (created_count > 0) {
                             message = wxString::Format(_L("Successfully exported %d filament presets (created)."), created_count);
@@ -5487,14 +5527,20 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
                         } else {
                             message = _L("Filament presets exported successfully.");
                         }
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Calling show_notification_in_webview() with success message";
-                        show_notification_in_webview(message, "success");
                     } else {
-                        message = wxString::Format(_L("Exported %d filament presets: %d successful, %d errors."), 
+                        message = wxString::Format(_L("Exported %d filament presets: %d successful, %d errors."),
                                                   success_count + error_count, success_count, error_count);
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [NOTIFICATION #" << notification_counter << "] Calling show_notification_in_webview() with warning message";
-                        show_notification_in_webview(message, "warning");
                     }
+
+                    // В dev mode добавляем детализацию по каждому пресету
+                    if (dev_mode && !detail_lines.empty()) {
+                        message += "\n";
+                        for (const auto& line : detail_lines) {
+                            message += "\n" + wxString::FromUTF8(line.c_str());
+                        }
+                    }
+
+                    show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
                     // Оповещаем WebView фронтенд что данные изменились — React обновит кэш
                     send_command_to_webview("sync_complete");
 
@@ -6100,49 +6146,63 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                 int error_count = 0;
                 int updated_count = 0;
                 int created_count = 0;
-                
+
+                std::map<std::string, std::string> ext_id_to_name;
+                for (const auto& p : profiles_json) {
+                    std::string eid = p.value("external_id", p.value("setting_id", ""));
+                    std::string nm = p.value("name", "");
+                    if (!eid.empty() && !nm.empty()) ext_id_to_name[eid] = nm;
+                }
+                std::vector<std::string> detail_lines;
+
                 for (const auto& result : response["results"]) {
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
-                    
+                    std::string message = result.value("message", "");
+                    std::string profile_name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
+
                     // Безопасно извлекаем fhub_id (может быть int или string)
                     int fhub_id = 0;
                     if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
                         fhub_id = parse_fhub_id(result["fhub_id"]);
                     }
-                    
+
                     if (status == "created") {
                         created_count++;
                         success_count++;
+                        detail_lines.push_back(profile_name + " — created");
                     } else if (status == "updated") {
                         updated_count++;
                         success_count++;
+                        detail_lines.push_back(profile_name + " — updated");
                     } else if (status == "error" || status == "skipped") {
                         error_count++;
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Printer profile " << external_id 
-                                                  << " import failed: " << result.value("message", "");
+                        detail_lines.push_back(profile_name + " — ERROR: " + message);
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Printer profile " << external_id
+                                                  << " import failed: " << message;
                     }
-                    
+
                     // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
                     if (fhub_id > 0 && !external_id.empty()) {
                         std::string mapping_key = CONFIG_KEY_PRINTER_PROFILE_MAPPING + "_" + external_id;
                         app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id 
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id
                                                << " -> fhub_id=" << fhub_id;
                     }
                 }
-                
+
                 CallAfter([app_config]() {
                     if (app_config != nullptr)
                         app_config->save();
                 });
 
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles export completed. "
-                                       << "Created: " << created_count 
+                                       << "Created: " << created_count
                                        << ", Updated: " << updated_count
                                        << ", Errors: " << error_count;
-                
-                CallAfter([this, success_count, error_count, created_count, updated_count]() {
+
+                CallAfter([this, success_count, error_count, created_count, updated_count, detail_lines]() {
+                    bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
                     wxString message;
                     if (error_count == 0) {
                         if (created_count > 0 && updated_count > 0) {
@@ -6155,12 +6215,17 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
                         } else {
                             message = _L("Printer profiles exported successfully.");
                         }
-                        show_notification_in_webview(message, "success");
                     } else {
                         message = wxString::Format(_L("Exported %d printer profiles: %d successful, %d errors."),
                                                   success_count + error_count, success_count, error_count);
-                        show_notification_in_webview(message, "warning");
                     }
+                    if (dev_mode && !detail_lines.empty()) {
+                        message += "\n";
+                        for (const auto& line : detail_lines) {
+                            message += "\n" + wxString::FromUTF8(line.c_str());
+                        }
+                    }
+                    show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
                     finish_export_operation();
                 });
             } catch (const std::exception& e) {
@@ -6678,49 +6743,63 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                 int error_count = 0;
                 int updated_count = 0;
                 int created_count = 0;
-                
+
+                std::map<std::string, std::string> ext_id_to_name;
+                for (const auto& p : profiles_json) {
+                    std::string eid = p.value("external_id", p.value("setting_id", ""));
+                    std::string nm = p.value("name", "");
+                    if (!eid.empty() && !nm.empty()) ext_id_to_name[eid] = nm;
+                }
+                std::vector<std::string> detail_lines;
+
                 for (const auto& result : response["results"]) {
                     std::string external_id = result.value("external_id", "");
                     std::string status = result.value("status", "");
-                    
+                    std::string message = result.value("message", "");
+                    std::string profile_name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
+
                     // Безопасно извлекаем fhub_id (может быть int или string)
                     int fhub_id = 0;
                     if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
                         fhub_id = parse_fhub_id(result["fhub_id"]);
                     }
-                    
+
                     if (status == "created") {
                         created_count++;
                         success_count++;
+                        detail_lines.push_back(profile_name + " — created");
                     } else if (status == "updated") {
                         updated_count++;
                         success_count++;
+                        detail_lines.push_back(profile_name + " — updated");
                     } else if (status == "error" || status == "skipped") {
                         error_count++;
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Print profile " << external_id 
-                                                  << " import failed: " << result.value("message", "");
+                        detail_lines.push_back(profile_name + " — ERROR: " + message);
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Print profile " << external_id
+                                                  << " import failed: " << message;
                     }
-                    
+
                     // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
                     if (fhub_id > 0 && !external_id.empty()) {
                         std::string mapping_key = CONFIG_KEY_PRINT_PROFILE_MAPPING + "_" + external_id;
                         app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id 
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Saved mapping external_id=" << external_id
                                               << " -> fhub_id=" << fhub_id;
                     }
                 }
-                
+
                 CallAfter([app_config]() {
                     if (app_config != nullptr)
                         app_config->save();
                 });
 
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles export completed. "
-                                      << "Created: " << created_count 
+                                      << "Created: " << created_count
                                       << ", Updated: " << updated_count
                                       << ", Errors: " << error_count;
-                
-                CallAfter([this, success_count, error_count, created_count, updated_count]() {
+
+                CallAfter([this, success_count, error_count, created_count, updated_count, detail_lines]() {
+                    bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
                     wxString message;
                     if (error_count == 0) {
                         if (created_count > 0 && updated_count > 0) {
@@ -6733,12 +6812,17 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
                         } else {
                             message = _L("Print profiles exported successfully.");
                         }
-                        show_notification_in_webview(message, "success");
                     } else {
                         message = wxString::Format(_L("Exported %d print profiles: %d successful, %d errors."),
                                                   success_count + error_count, success_count, error_count);
-                        show_notification_in_webview(message, "warning");
                     }
+                    if (dev_mode && !detail_lines.empty()) {
+                        message += "\n";
+                        for (const auto& line : detail_lines) {
+                            message += "\n" + wxString::FromUTF8(line.c_str());
+                        }
+                    }
+                    show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
                     finish_export_operation();
                 });
             } catch (const std::exception& e) {

@@ -12,8 +12,8 @@ $VersionIncFile = Join-Path $OrcaDir "version.inc"
 # Version Management (single source of truth: version.inc)
 # ============================================================
 
-function Get-BaseVersion {
-    # Read SoftFever_VERSION from version.inc (e.g. "2.3.2-dev")
+function Get-StoredVersion {
+    # Read raw SoftFever_VERSION from version.inc (e.g. "2.3.2-dev+fh")
     if (Test-Path $VersionIncFile) {
         $content = Get-Content $VersionIncFile -Raw
         if ($content -match 'set\(SoftFever_VERSION\s+"([^"]+)"\)') {
@@ -23,20 +23,46 @@ function Get-BaseVersion {
     return "0.0.0"
 }
 
-function Get-FHVersion {
-    $base = Get-BaseVersion
-    # Append -fh to whatever version upstream has (e.g. 2.3.2-dev -> 2.3.2-dev-fh)
-    if ($base -match '-fh$') {
-        return $base
+function Normalize-FHVersion {
+    param([string]$VersionString)
+
+    if (-not $VersionString) {
+        return "0.0.0+fh"
     }
-    return "$base-fh"
+
+    $normalized = $VersionString.Trim()
+    # Legacy migration: 2.3.2-dev-fh -> 2.3.2-dev+fh
+    $normalized = $normalized -replace '-fh$', ''
+    # Keep FilamentHub marker as semver build metadata so upstream stable releases
+    # are not always considered newer than our same-numbered builds.
+    $normalized = $normalized -replace '\+.*$', ''
+
+    return "$normalized+fh"
+}
+
+function Get-BaseVersion {
+    # Return the editable base version without FilamentHub metadata.
+    $stored = Get-StoredVersion
+    if (-not $stored) {
+        return "0.0.0"
+    }
+
+    $base = $stored.Trim()
+    $base = $base -replace '-fh$', ''
+    $base = $base -replace '\+.*$', ''
+    return $base
+}
+
+function Get-FHVersion {
+    return Normalize-FHVersion (Get-StoredVersion)
 }
 
 function Set-BaseVersion {
     param([string]$NewVersion)
-    # Write back to version.inc, always with -fh suffix in SoftFever_VERSION
+    # Write back to version.inc, always with +fh build metadata in SoftFever_VERSION.
+    $normalizedVersion = Normalize-FHVersion $NewVersion
     $content = Get-Content $VersionIncFile -Raw
-    $content = $content -replace 'set\(SoftFever_VERSION\s+"[^"]+"\)', "set(SoftFever_VERSION `"$NewVersion`")"
+    $content = $content -replace 'set\(SoftFever_VERSION\s+"[^"]+"\)', "set(SoftFever_VERSION `"$normalizedVersion`")"
     $content | Set-Content $VersionIncFile -NoNewline -Encoding utf8
 }
 
@@ -1064,7 +1090,7 @@ function Change-Version {
     Write-Host "  Base version (version.inc): $base" -ForegroundColor Cyan
     Write-Host "  Build version:              $Version" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  Enter the base version. '-fh' will be appended automatically." -ForegroundColor DarkGray
+    Write-Host "  Enter the base version. '+fh' will be appended automatically." -ForegroundColor DarkGray
     Write-Host "  Examples: 2.3.2-dev, 2.3.3, 2.4.0-rc1" -ForegroundColor DarkGray
     Write-Host ""
 

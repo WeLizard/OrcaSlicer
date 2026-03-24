@@ -685,16 +685,26 @@ function Build-FullLinux {
     if ($LASTEXITCODE -eq 0) {
         Write-Host "`n  Extracting AppImage from container..." -ForegroundColor Cyan
         $containerId = docker create orcaslicer-fh-build
-        & docker cp "${containerId}:/OrcaSlicer/build/package/" "$OrcaDir/docker_output/"
-        & docker rm $containerId
+        $dockerOutputDir = Join-Path $OrcaDir "docker_output"
+        if (Test-Path $dockerOutputDir) {
+            Remove-Item $dockerOutputDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -Path $dockerOutputDir -ItemType Directory -Force | Out-Null
 
-        $appImage = Get-ChildItem -Path "$OrcaDir/docker_output" -Filter "*.AppImage" -ErrorAction SilentlyContinue |
+        $appImagePath = (& docker run --rm --entrypoint sh orcaslicer-fh-build -lc "find /OrcaSlicer/build -maxdepth 2 -name '*.AppImage' -print -quit").Trim()
+        if ($appImagePath) {
+            & docker cp "${containerId}:${appImagePath}" "$dockerOutputDir/"
+        }
+        & docker rm $containerId | Out-Null
+
+        $appImage = Get-ChildItem -Path $dockerOutputDir -Filter "*.AppImage" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
         if ($appImage) {
             $newName = "OrcaSlicer-FilamentHub-$Version-linux-x64.AppImage"
             Move-Item $appImage.FullName (Join-Path $OrcaDir $newName) -Force
-            Remove-Item "$OrcaDir/docker_output" -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $dockerOutputDir -Recurse -Force -ErrorAction SilentlyContinue
             Write-Host "`n  [OK] Linux AppImage created: $newName" -ForegroundColor Green
             Write-Host "  Size: $([math]::Round((Get-Item (Join-Path $OrcaDir $newName)).Length / 1MB, 1)) MB" -ForegroundColor DarkGray
 

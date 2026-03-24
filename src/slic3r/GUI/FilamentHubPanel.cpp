@@ -779,10 +779,13 @@ void FilamentHubPanel::process_login_success(const std::string& access_token, co
     // Update UI to show logged-in state
     CallAfter([this]() {
         update_user_info();
-        // Автоматически синхронизируем пресеты после логина
-        if (!m_is_syncing) {
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-syncing presets after login...";
+        // Автоматически синхронизируем пресеты после логина — ОДНОКРАТНО
+        if (!m_is_syncing && !m_initial_sync_done.load()) {
+            m_initial_sync_done.store(true);
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Auto-syncing presets after login (one-time)...";
             synchronize_presets(true); // force_full_sync = true для первого раза
+        } else {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Skipping auto-sync after login (already done or in progress)";
         }
     });
 }
@@ -928,9 +931,9 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
             CallAfter([this]() {
                 // Очищаем все токены в AppConfig
                 if (wxGetApp().app_config != nullptr) {
-                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, "");
-                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, "");
-                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, "");
+                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, std::string());
+                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, std::string());
+                    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, std::string());
                     wxGetApp().app_config->save();
                     BOOST_LOG_TRIVIAL(info) << "FilamentHub: Cleared all auth tokens from AppConfig (frontend logout)";
                 }
@@ -1120,8 +1123,8 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false")
                             << ", m_full_sync_attempted=" << (m_full_sync_attempted.load() ? "true" : "false");
     
-    // Атомарный check-and-set: предотвращает race condition при одновременных вызовах
-    if (m_is_syncing.exchange(true)) {
+    // Атомарный check-and-set с таймаутом: предотвращает deadlock при зависших операциях
+    if (!try_acquire_sync_lock()) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Sync already in progress, skipping";
         return;
     }
@@ -2013,9 +2016,10 @@ bool FilamentHubPanel::load_auth_token(std::string& access_token, int& user_id)
         if (!is_valid) {
             BOOST_LOG_TRIVIAL(warning) << "FilamentHub: user_id_str contains non-digit characters: '" << user_id_str << "', clearing corrupted data";
             // Очищаем повреждённые данные из AppConfig
-            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, "");
-            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, "");
-            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, "");
+            // IMPORTANT: use std::string() not "" — const char* "" resolves to bool overload and writes "true"!
+            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, std::string());
+            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, std::string());
+            wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, std::string());
             CallAfter([]() {
                 if (wxGetApp().app_config != nullptr)
                     wxGetApp().app_config->save();
@@ -2200,8 +2204,8 @@ void FilamentHubPanel::remove_preset_mapping(int preset_id)
     std::string key = CONFIG_KEY_PRESET_MAPPING + "_" + std::to_string(preset_id);
     
     // AppConfig doesn't have explicit remove method, so we set empty string
-    // (similar to how logout() clears the token)
-    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, key, "");
+    // IMPORTANT: use std::string() not "" — const char* "" resolves to bool overload and writes "true"!
+    wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, key, std::string());
     CallAfter([]() {
         if (wxGetApp().app_config != nullptr)
             wxGetApp().app_config->save();
@@ -3723,18 +3727,23 @@ void FilamentHubPanel::logout()
 {
     // Clear all auth tokens from AppConfig
     if (wxGetApp().app_config != nullptr) {
-        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, "");
-        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, "");
-        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, "");
+        // IMPORTANT: use std::string() not "" — const char* "" resolves to bool overload and writes "true"!
+        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_ACCESS_TOKEN, std::string());
+        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_REFRESH_TOKEN, std::string());
+        wxGetApp().app_config->set(CONFIG_SECTION_FILAMENTHUB, CONFIG_KEY_USER_ID, std::string());
         CallAfter([]() {
             if (wxGetApp().app_config != nullptr)
                 wxGetApp().app_config->save();
         });
     }
     
+    // Reset sync state so next login triggers auto-sync again
+    m_initial_sync_done.store(false);
+    m_full_sync_attempted.store(false);
+
     // Update UI
     update_ui_for_login_state(false);
-    
+
     // Navigate to catalog
     navigate_to_catalog();
 }
@@ -5042,6 +5051,37 @@ void FilamentHubPanel::show_notifications_dropdown()
 }
 
 // ============================================================================
+// Helper: try to acquire sync lock with deadlock timeout (60 seconds)
+// Returns true if lock was acquired, false if sync is genuinely in progress.
+// If sync has been stuck for >60s, force-resets and acquires the lock.
+// ============================================================================
+
+bool FilamentHubPanel::try_acquire_sync_lock()
+{
+    static constexpr int SYNC_TIMEOUT_SECONDS = 60;
+
+    if (m_is_syncing.exchange(true)) {
+        // Already locked — check if it's been stuck too long
+        auto elapsed = std::chrono::steady_clock::now() - m_sync_started_at;
+        auto elapsed_sec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        if (elapsed_sec > SYNC_TIMEOUT_SECONDS) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Sync lock has been held for " << elapsed_sec
+                                       << "s (timeout=" << SYNC_TIMEOUT_SECONDS << "s), force-resetting deadlocked state";
+            m_active_exports.store(0);
+            m_active_syncs = 0;
+            // Lock is already true from our exchange, so we now own it
+        } else {
+            // Genuinely in progress
+            m_is_syncing.store(true); // restore (exchange already set it)
+            return false;
+        }
+    }
+
+    m_sync_started_at = std::chrono::steady_clock::now();
+    return true;
+}
+
+// ============================================================================
 // Helper: reset m_is_syncing when export finishes
 // If running as part of unified export, decrement counter first
 // ============================================================================
@@ -5075,8 +5115,8 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub()
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_filament_presets_to_filamenthub() CALLED (call #" << call_counter << ") ==========";
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT TRACE] m_is_syncing=" << (m_is_syncing ? "true" : "false");
     
-    // Атомарный check-and-set: если уже true — кто-то экспортирует, выходим
-    if (m_is_syncing.exchange(true)) {
+    // Атомарный check-and-set с таймаутом: если уже true — кто-то экспортирует, выходим (с deadlock recovery после 60с)
+    if (!try_acquire_sync_lock()) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [EXPORT SKIP] Export already in progress, skipping duplicate call #" << call_counter;
         return;
     }
@@ -5649,8 +5689,7 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub()
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_printer_profiles_to_filamenthub() CALLED ==========";
 
-    // Атомарный check-and-set: если уже true — кто-то экспортирует, выходим
-    if (m_is_syncing.exchange(true)) {
+    if (!try_acquire_sync_lock()) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress, skipping printer profiles export";
         return;
     }
@@ -6322,8 +6361,7 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub()
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_print_profiles_to_filamenthub() CALLED ==========";
 
-    // Атомарный check-and-set: если уже true — кто-то экспортирует, выходим
-    if (m_is_syncing.exchange(true)) {
+    if (!try_acquire_sync_lock()) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress, skipping print profiles export";
         return;
     }
@@ -6919,8 +6957,7 @@ void FilamentHubPanel::export_profiles_to_filamenthub()
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: ========== export_profiles_to_filamenthub() CALLED ==========";
 
-    // Атомарный check-and-set: если уже true — кто-то экспортирует/синхронизирует, выходим
-    if (m_is_syncing.exchange(true)) {
+    if (!try_acquire_sync_lock()) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Export/sync already in progress, skipping";
         return;
     }
@@ -7024,7 +7061,7 @@ void FilamentHubPanel::scan_orphaned_presets()
 {
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: scan_orphaned_presets() called";
 
-    if (m_is_syncing.exchange(true)) {
+    if (!try_acquire_sync_lock()) {
         BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Sync already in progress, skipping orphaned scan";
         return;
     }

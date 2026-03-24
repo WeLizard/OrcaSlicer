@@ -234,6 +234,9 @@ private:
      */
     void export_filament_presets_to_filamenthub();
 
+    /** Try to acquire sync lock with 60s deadlock timeout. Returns true if acquired. */
+    bool try_acquire_sync_lock();
+
     /** Reset m_is_syncing when export finishes (handles unified export counter). */
     void finish_export_operation();
 
@@ -619,6 +622,8 @@ private:
     std::atomic<int> m_active_exports { 0 }; // Number of active export operations in unified export
     std::atomic<bool> m_full_sync_attempted { false }; // Защита от зацикливания: была ли попытка полной синхронизации
     std::atomic<bool> m_sync_retry_attempted { false }; // Silent retry after 401 (wait for frontend token refresh)
+    std::atomic<bool> m_initial_sync_done { false }; // Prevents repeated auto-sync after login
+    std::chrono::steady_clock::time_point m_sync_started_at; // Timestamp when sync started (for timeout detection)
     wxGauge* m_sync_progress { nullptr }; // Progress bar for sync operations
     wxStaticText* m_sync_status_label { nullptr }; // Status text for sync progress
     int m_unread_notifications_count { 0 }; // Unread notifications count

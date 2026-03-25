@@ -309,6 +309,51 @@ void FilamentHubClient::download_profile_info(
     }
 }
 
+void FilamentHubClient::batch_download_profiles(
+    const std::vector<int>& preset_ids,
+    const std::string& access_token,
+    std::function<void(std::string, unsigned)> on_complete,
+    std::function<void(std::string, std::string, unsigned)> on_error
+)
+{
+    try {
+        std::string url = s_api_base_url + "/api/v1/orcaslicer/presets/batch-export";
+
+        // Build JSON body: {"preset_ids": [1, 2, 3, ...]}
+        nlohmann::json payload;
+        payload["preset_ids"] = preset_ids;
+        std::string body = payload.dump();
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Batch download " << preset_ids.size()
+                                << " profiles (" << body.size() << " bytes)";
+
+        auto request = Http::post(url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer " + access_token)
+            .set_post_body(body)
+            .timeout_connect(10)
+            .timeout_max(60) // larger timeout for batch
+            .on_complete([this, on_complete, count = preset_ids.size()](std::string resp, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Batch download successful (" << count
+                                        << " profiles). Status: " << status;
+                cleanup_completed_requests();
+                on_complete(resp, status);
+            })
+            .on_error([this, on_error](std::string resp, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Batch download failed. Error: " << error
+                                         << ", Status: " << status;
+                cleanup_completed_requests();
+                on_error(resp, error, status);
+            })
+            .perform();
+        store_request(request);
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in batch_download_profiles: " << e.what();
+        on_error("", std::string("Exception: ") + e.what(), 0);
+    }
+}
+
 void FilamentHubClient::get_my_presets(
     const std::string& access_token,
     const std::string& updated_since,

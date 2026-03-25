@@ -1564,58 +1564,75 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                     }
                 }
 
-                // 6. Собираем пресеты в очередь для обработки после завершения callback
-                // ВАЖНО: НЕ вызываем import_preset_silent здесь, чтобы избежать deadlock!
-                // Вместо этого добавляем пресеты в очередь и обработаем их позже через CallAfter
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14] Adding " << presets.size() << " presets to import queue...";
-                
-                // Сохраняем токен, URL и user_id для последующей обработки
-                std::string access_token_for_queue = access_token;
-                std::string api_base_url_for_queue = api_base_url;
-                int user_id_for_queue = user_id; // КРИТИЧНО: Сохраняем user_id для обновления last_sync_time
-                
-                // Добавляем пресеты в очередь
+                // 6. Batch-download all preset configs + .info in ONE HTTP request
+                // ВАЖНО: Вместо N отдельных download_profile + download_profile_info запросов
+                // используем один POST /orcaslicer/presets/batch-export
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14] Batch-downloading " << presets.size() << " preset configs...";
+
+                // Collect preset IDs and metadata
+                std::vector<int> preset_ids;
+                std::map<int, std::string> presets_meta; // id → name
+                for (const auto& preset_json : presets) {
+                    int pid = preset_json["id"];
+                    preset_ids.push_back(pid);
+                    presets_meta[pid] = preset_json.value("name", "");
+                }
+
+                // Initialize counters for process_batch_export_response
                 {
                     std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
-                    m_preset_import_queue.clear();
                     m_total_presets_to_sync = presets.size();
                     m_synced_count = 0;
                     m_error_count = 0;
                     m_sync_detail_lines.clear();
-                    
-                    for (const auto& preset_json : presets) {
-                        int preset_id = preset_json["id"];
-                        std::string preset_name = preset_json["name"];
-                        
-                        PresetImportTask task;
-                        task.preset_id = preset_id;
-                        task.preset_name = preset_name;
-                        task.access_token = access_token_for_queue;
-                        task.api_base_url = api_base_url_for_queue;
-                        task.user_id = user_id_for_queue; // КРИТИЧНО: Сохраняем user_id
-                        
-                        m_preset_import_queue.push_back(task);
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 14.1] Added preset " << preset_id 
-                                                 << " (" << preset_name << ") to import queue";
-                    }
                 }
-                
-                // Прогресс-бар не показываем - синхронизация быстрая
-                // Оставляем только логи с названиями и количеством пресетов
-                CallAfter([this, total_presets = presets.size()]() {
-                    // Скрываем прогресс-бар и строку состояния - синхронизация быстрая
-                    if (m_sync_progress) {
-                        m_sync_progress->Hide();
+
+                int user_id_for_batch = user_id;
+                std::string access_token_for_batch = access_token;
+
+                m_fhub_client->batch_download_profiles(
+                    preset_ids,
+                    access_token,
+                    // on_complete: all profiles downloaded in one response
+                    [this, presets_meta, user_id_for_batch, access_token_for_batch](std::string batch_body, unsigned batch_status) {
+                        if (batch_status != 200) {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Batch download failed. Status: " << batch_status;
+                            CallAfter([this, batch_status]() {
+                                m_active_syncs--;
+                                m_is_syncing.store(false);
+                                if (m_active_syncs <= 0) {
+                                    update_sync_button_state(false);
+                                    m_active_syncs = 0;
+                                }
+                                m_info_panel->Layout();
+                                show_notification_in_webview(
+                                    wxString::Format(_L("Failed to download presets. Status: %d"), batch_status),
+                                    "error"
+                                );
+                            });
+                            return;
+                        }
+                        // Process all profiles locally (no more per-preset HTTP)
+                        process_batch_export_response(batch_body, presets_meta, user_id_for_batch, access_token_for_batch);
+                    },
+                    // on_error: batch download network failure
+                    [this](std::string body, std::string error, unsigned status) {
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Batch download error: " << error;
+                        CallAfter([this, error]() {
+                            m_active_syncs--;
+                            m_is_syncing.store(false);
+                            if (m_active_syncs <= 0) {
+                                update_sync_button_state(false);
+                                m_active_syncs = 0;
+                            }
+                            m_info_panel->Layout();
+                            show_notification_in_webview(
+                                wxString::Format(_L("Failed to download presets: %s"), wxString::FromUTF8(error.c_str())),
+                                "error"
+                            );
+                        });
                     }
-                    if (m_sync_status_label) {
-                        m_sync_status_label->Hide();
-                    }
-                    m_info_panel->Layout();
-                    
-                    // Начинаем обработку очереди пресетов в UI потоке
-                    // Это предотвратит deadlock, так как мы не вызываем perform_sync() из callback HTTP клиента
-                    process_preset_import_queue();
-                });
+                );
                 
                 // 8. Отправляем удалённые пресеты на бэкенд (если есть)
                 // ВАЖНО: Отправляем через CallAfter, чтобы не блокировать callback HTTP клиента
@@ -3149,12 +3166,305 @@ void FilamentHubPanel::import_preset_silent_with_callback(int preset_id, const s
     );
 }
 
+// ---------------------------------------------------------------------------
+// Batch import: process all profiles from a single batch-export API response
+// ---------------------------------------------------------------------------
+void FilamentHubPanel::process_batch_export_response(
+    const std::string& batch_json,
+    const std::map<int, std::string>& presets_meta,
+    int user_id,
+    const std::string& access_token)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] ========== process_batch_export_response START ==========";
+
+    // ---------- 1. Parse the batch response (background thread) ----------
+    nlohmann::json response;
+    try {
+        response = nlohmann::json::parse(batch_json);
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Failed to parse batch response: " << e.what();
+        CallAfter([this]() {
+            m_active_syncs--;
+            m_is_syncing.store(false);
+            if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
+            m_info_panel->Layout();
+            show_notification_in_webview(_L("Failed to parse batch download response."), "error");
+        });
+        return;
+    }
+
+    if (!response.contains("profiles") || !response["profiles"].is_array()) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Response missing 'profiles' array";
+        CallAfter([this]() {
+            m_active_syncs--;
+            m_is_syncing.store(false);
+            if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
+            m_info_panel->Layout();
+            show_notification_in_webview(_L("Invalid batch download response."), "error");
+        });
+        return;
+    }
+
+    // ---------- 2. Prepare temp files for each profile (background thread) ----------
+    struct PreparedPreset {
+        int preset_id;
+        std::string new_name;
+        boost::filesystem::path temp_file;
+        std::string info_content;
+        bool ok { false };
+        std::string error_msg;
+    };
+
+    std::vector<PreparedPreset> prepared;
+    prepared.reserve(response["profiles"].size());
+
+    for (const auto& item : response["profiles"]) {
+        int pid = item.value("preset_id", 0);
+        std::string item_status = item.value("status", "error");
+        std::string item_error = item.value("error", "");
+
+        PreparedPreset pp;
+        pp.preset_id = pid;
+
+        if (item_status != "ok" || !item.contains("config") || item["config"].is_null()) {
+            pp.ok = false;
+            pp.error_msg = item_error.empty() ? "Export failed on server" : item_error;
+            pp.new_name = presets_meta.count(pid) ? presets_meta.at(pid) : std::to_string(pid);
+            prepared.push_back(std::move(pp));
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Preset " << pid << " skipped: " << pp.error_msg;
+            continue;
+        }
+
+        try {
+            nlohmann::json profile_json = item["config"];
+            std::string original_name = profile_json.value("name", "");
+            if (original_name.empty() && presets_meta.count(pid))
+                original_name = presets_meta.at(pid);
+            pp.new_name = ensure_filamenthub_postfix(original_name);
+            profile_json["name"] = pp.new_name;
+
+            ensure_parent_preset_exists(profile_json);
+
+            // Write temp file
+            boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
+            pp.temp_file = temp_dir / ("fhub_batch_" + std::to_string(pid) + "_" +
+                                       std::to_string(std::time(nullptr)) + ".json");
+            std::ofstream ofs(pp.temp_file.string());
+            if (!ofs.is_open()) {
+                pp.ok = false;
+                pp.error_msg = "Failed to create temp file";
+                prepared.push_back(std::move(pp));
+                continue;
+            }
+            ofs << profile_json.dump(2);
+            ofs.close();
+
+            // Store .info content from batch response (no separate HTTP needed)
+            if (item.contains("info") && item["info"].is_string())
+                pp.info_content = item["info"].get<std::string>();
+
+            pp.ok = true;
+        } catch (const std::exception& e) {
+            pp.ok = false;
+            pp.error_msg = std::string("Prepare failed: ") + e.what();
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Preset " << pid << ": " << pp.error_msg;
+        }
+
+        prepared.push_back(std::move(pp));
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Prepared " << prepared.size()
+                            << " presets for import. Posting to UI thread...";
+
+    // ---------- 3. Import all on UI thread in one CallAfter ----------
+    CallAfter([this, prepared = std::move(prepared), user_id]() {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] ========== UI thread import START ==========";
+
+        PresetBundle* bundle = wxGetApp().preset_bundle;
+        if (bundle == nullptr) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] preset_bundle is null";
+            m_active_syncs--;
+            m_is_syncing.store(false);
+            if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
+            m_info_panel->Layout();
+            show_notification_in_webview(_L("Preset bundle not available."), "error");
+            return;
+        }
+
+        int synced = 0;
+        int errors = 0;
+        std::vector<std::string> detail_lines;
+
+        for (const auto& pp : prepared) {
+            if (!pp.ok) {
+                errors++;
+                detail_lines.push_back(pp.new_name + " — ERROR: " + pp.error_msg);
+                continue;
+            }
+
+            // Import via existing OrcaSlicer import_json_presets
+            bool import_ok = false;
+            try {
+                PresetsConfigSubstitutions substitutions;
+                int overwrite = 1;
+                std::vector<std::string> import_result_vec;
+                auto override_confirm = [](std::string const&) -> int { return 1; };
+                std::string file_path = pp.temp_file.string();
+
+                import_ok = bundle->import_json_presets(
+                    substitutions, file_path, override_confirm,
+                    ForwardCompatibilitySubstitutionRule::Enable,
+                    overwrite, import_result_vec
+                );
+
+                if (import_ok || !import_result_vec.empty()) {
+                    save_preset_mapping(pp.preset_id, pp.new_name);
+
+                    // Write .info file directly (data already in batch response — no HTTP)
+                    if (!pp.info_content.empty()) {
+                        Preset* imported = bundle->filaments.find_preset2(pp.new_name, true);
+                        if (imported && !imported->file.empty()) {
+                            boost::filesystem::path info_path(imported->file);
+                            info_path.replace_extension(".info");
+                            try {
+                                boost::filesystem::ofstream info_ofs(info_path);
+                                if (info_ofs.is_open()) {
+                                    info_ofs << pp.info_content;
+                                    info_ofs.close();
+                                }
+                            } catch (const std::exception& e) {
+                                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] .info write failed: " << e.what();
+                            }
+
+                            // Update Preset object fields from .info
+                            if (imported) {
+                                std::istringstream info_stream(pp.info_content);
+                                std::string line;
+                                while (std::getline(info_stream, line)) {
+                                    if (line.empty() || line[0] == '#') continue;
+                                    size_t eq = line.find('=');
+                                    if (eq == std::string::npos) continue;
+                                    std::string key = line.substr(0, eq);
+                                    std::string val = line.substr(eq + 1);
+                                    boost::algorithm::trim(key);
+                                    boost::algorithm::trim(val);
+                                    if (key == "setting_id") imported->setting_id = val;
+                                    else if (key == "base_id") imported->base_id = val;
+                                    else if (key == "sync_info") imported->sync_info = val;
+                                    else if (key == "updated_time") {
+                                        try { imported->updated_time = std::stoll(val); } catch (...) {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    synced++;
+                    detail_lines.push_back(pp.new_name + " — OK");
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Preset " << pp.preset_id << " imported OK";
+                } else {
+                    errors++;
+                    detail_lines.push_back(pp.new_name + " — ERROR: import_json_presets failed");
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] import_json_presets failed for " << pp.preset_id;
+                }
+            } catch (const std::exception& e) {
+                errors++;
+                detail_lines.push_back(pp.new_name + " — ERROR: " + e.what());
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Exception importing " << pp.preset_id << ": " << e.what();
+            }
+
+            // Cleanup temp file
+            try { boost::filesystem::remove(pp.temp_file); } catch (...) {}
+        }
+
+        // ---------- 4. Finalize (same as end of process_preset_import_queue) ----------
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] All done. Calling load_current_presets()...";
+        wxGetApp().load_current_presets();
+
+        bool no_errors = (errors == 0);
+        if (no_errors && user_id > 0) {
+            std::time_t now = std::time(nullptr);
+            std::stringstream ss;
+            ss << std::put_time(std::gmtime(&now), "%Y-%m-%dT%H:%M:%S.000000");
+            std::string ts = ss.str();
+            save_last_sync_time(user_id, ts, SyncTimestampType::Filament);
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Saved last_sync_time=" << ts;
+        } else if (!no_errors) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Sync had " << errors
+                                       << " errors — last_sync_time NOT updated";
+        }
+
+        m_full_sync_attempted.store(false);
+        send_command_to_webview("sync_complete");
+
+        m_active_syncs--;
+        m_is_syncing.store(false);
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Sync completed. Synced: " << synced << ", Errors: " << errors;
+
+        // Notification
+        {
+            bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
+            wxString message;
+            if (no_errors)
+                message = wxString::Format(_L("Synced %d filament presets."), synced);
+            else
+                message = wxString::Format(_L("Synced %d filament presets: %d successful, %d errors."),
+                                           synced + errors, synced, errors);
+            if (dev_mode && !detail_lines.empty()) {
+                message += "\n";
+                for (const auto& l : detail_lines)
+                    message += "\n" + wxString::FromUTF8(l.c_str());
+            }
+            show_notification_in_webview(message, no_errors ? "success" : "warning");
+        }
+
+        if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+        if (m_sync_status_label) m_sync_status_label->Hide();
+        if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
+        m_info_panel->Layout();
+        update_user_info();
+        update_unread_notifications_count();
+
+        if (!no_errors) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Skipping printer/print export due to errors";
+            return;
+        }
+
+        // Auto-export printer + print profiles (same as original flow)
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Checking permissions for printer/print export...";
+        std::string token;
+        int uid = 0;
+        if (load_auth_token(token, uid)) {
+            check_user_permissions(token,
+                [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                    CallAfter([this, token, printer_import, print_import]() {
+                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                        int cnt = 0;
+                        if (printer_import) cnt++;
+                        if (print_import) cnt++;
+                        if (cnt == 0) return;
+                        m_is_syncing.store(true);
+                        m_active_exports.store(cnt);
+                        if (printer_import) export_printer_profiles_to_filamenthub_internal(token, api_url);
+                        if (print_import) export_print_profiles_to_filamenthub_internal(token, api_url);
+                    });
+                },
+                [](std::string error, unsigned status) {
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions: " << error;
+                }
+            );
+        }
+    });
+
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] ========== process_batch_export_response END (posted to UI) ==========";
+}
+
 void FilamentHubPanel::process_preset_import_queue()
 {
     PresetImportTask task;
     size_t remaining_count = 0;
     bool should_finish = false;
-    
+
     // ВАЖНО: Получаем задачу из очереди и проверяем состояние БЕЗ блокировки мьютекса во время обработки
     // Это позволяет избежать deadlock при рекурсивных вызовах
     {

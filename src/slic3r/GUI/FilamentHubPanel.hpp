@@ -677,10 +677,28 @@ private:
 
     void import_profile_internal(int preset_id, const wxString& sequence_id, std::string api_base_url);
     
-    void process_preset_import_queue(); // Process preset import queue sequentially
-    void import_preset_silent_with_callback(int preset_id, const std::string& preset_name, 
+    void process_preset_import_queue(); // Process preset import queue sequentially (legacy per-preset HTTP)
+    void import_preset_silent_with_callback(int preset_id, const std::string& preset_name,
                                            const std::string& access_token,
                                            std::function<void(bool success)> on_complete);
+
+    /**
+     * \brief Import all presets from a batch-export API response (no per-preset HTTP).
+     *
+     * Called from the batch_download_profiles callback.  Parses the JSON array,
+     * writes temp files, and imports every preset on the UI thread in one pass.
+     *
+     * \param batch_json  Raw JSON body from POST /orcaslicer/presets/batch-export
+     * \param presets_meta Map preset_id → name (from the earlier get_my_presets response)
+     * \param user_id     Needed to save last_sync_time after import
+     * \param access_token Needed for ensure_parent_preset_exists (may resolve inherits)
+     */
+    void process_batch_export_response(
+        const std::string& batch_json,
+        const std::map<int, std::string>& presets_meta,
+        int user_id,
+        const std::string& access_token
+    );
 
     void run_async(const std::string& job_name, std::function<void()> job);
     void cleanup_finished_tasks();

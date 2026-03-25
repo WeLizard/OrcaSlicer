@@ -180,8 +180,28 @@ public:
     );
 
     /**
+     * \brief Batch-download multiple presets (OrcaSlicer JSON + .info) in one request
+     *
+     * Replaces N individual download_profile + download_profile_info calls with
+     * a single POST to /api/v1/orcaslicer/presets/batch-export.
+     *
+     * Response JSON: { "profiles": [ { "preset_id": N, "config": {...}, "info": "...", "status": "ok"|"error" }, ... ] }
+     *
+     * \param preset_ids Vector of preset IDs to download
+     * \param access_token JWT access token
+     * \param on_complete Called on success. Parameters: (response_body_json, http_status)
+     * \param on_error Called on failure. Parameters: (response_body, error_message, http_status)
+     */
+    void batch_download_profiles(
+        const std::vector<int>& preset_ids,
+        const std::string& access_token,
+        std::function<void(std::string /* json_body */, unsigned /* http_status */)> on_complete,
+        std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    );
+
+    /**
      * \brief Get user's presets (created + saved from catalog)
-     * 
+     *
      * Retrieves all presets belonging to the authenticated user.
      * Supports incremental sync via updated_since parameter.
      * 

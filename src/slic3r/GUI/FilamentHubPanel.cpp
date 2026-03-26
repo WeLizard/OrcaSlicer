@@ -123,6 +123,16 @@ static int parse_fhub_id(const nlohmann::json& val) {
     return 0;
 }
 
+static std::string json_string_value_or(const nlohmann::json& object, const char* key, std::string default_value = {})
+{
+    auto it = object.find(key);
+    if (it == object.end() || it->is_null())
+        return default_value;
+    if (!it->is_string())
+        return default_value;
+    return it->get<std::string>();
+}
+
 // Static member initialization
 const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "https://filamenthub.ru";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";
@@ -1575,7 +1585,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 for (const auto& preset_json : presets) {
                     int pid = preset_json["id"];
                     preset_ids.push_back(pid);
-                    presets_meta[pid] = preset_json.value("name", "");
+                    presets_meta[pid] = json_string_value_or(preset_json, "name", "");
                 }
 
                 // Initialize counters for process_batch_export_response
@@ -1613,7 +1623,37 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                             return;
                         }
                         // Process all profiles locally (no more per-preset HTTP)
-                        process_batch_export_response(batch_body, presets_meta, user_id_for_batch, access_token_for_batch);
+                        try {
+                            process_batch_export_response(batch_body, presets_meta, user_id_for_batch, access_token_for_batch);
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] process_batch_export_response threw: " << e.what();
+                            CallAfter([this]() {
+                                m_active_syncs--;
+                                m_is_syncing.store(false);
+                                if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+                                if (m_sync_status_label) m_sync_status_label->Hide();
+                                if (m_active_syncs <= 0) {
+                                    update_sync_button_state(false);
+                                    m_active_syncs = 0;
+                                }
+                                if (m_info_panel) m_info_panel->Layout();
+                                show_notification_in_webview(_L("Failed to process batch preset response."), "error");
+                            });
+                        } catch (...) {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] process_batch_export_response threw unknown exception";
+                            CallAfter([this]() {
+                                m_active_syncs--;
+                                m_is_syncing.store(false);
+                                if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+                                if (m_sync_status_label) m_sync_status_label->Hide();
+                                if (m_active_syncs <= 0) {
+                                    update_sync_button_state(false);
+                                    m_active_syncs = 0;
+                                }
+                                if (m_info_panel) m_info_panel->Layout();
+                                show_notification_in_webview(_L("Failed to process batch preset response."), "error");
+                            });
+                        }
                     },
                     // on_error: batch download network failure
                     [this](std::string body, std::string error, unsigned status) {
@@ -3226,8 +3266,8 @@ void FilamentHubPanel::process_batch_export_response(
 
     for (const auto& item : response["profiles"]) {
         int pid = item.value("preset_id", 0);
-        std::string item_status = item.value("status", "error");
-        std::string item_error = item.value("error", "");
+        std::string item_status = json_string_value_or(item, "status", "error");
+        std::string item_error = json_string_value_or(item, "error", "");
 
         PreparedPreset pp;
         pp.preset_id = pid;
@@ -3243,7 +3283,7 @@ void FilamentHubPanel::process_batch_export_response(
 
         try {
             pp.profile_json = item["config"];
-            std::string original_name = pp.profile_json.value("name", "");
+            std::string original_name = json_string_value_or(pp.profile_json, "name", "");
             if (original_name.empty() && presets_meta.count(pid))
                 original_name = presets_meta.at(pid);
             pp.new_name = ensure_filamenthub_postfix(original_name);

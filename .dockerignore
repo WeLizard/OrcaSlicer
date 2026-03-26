@@ -28,3 +28,12 @@ scripts/Dockerfile
 scripts/DockerBuild.sh
 scripts/DockerRun.sh
 scripts/.dockerignore
+
+# Build artifacts (prevent 300+ MB from entering Docker context)
+*.AppImage
+*.zip
+*.exe
+*.tar.gz
+docker_output/
+docker_output_verify/
+.linux_portable_staging/

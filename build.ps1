@@ -125,6 +125,43 @@ function Touch-FilamentHubFiles {
     }
 }
 
+function Remove-PathSafely {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    if (-not (Test-Path $Path)) {
+        Write-Host "  $Label doesn't exist" -ForegroundColor DarkGray
+        return $true
+    }
+
+    try {
+        Remove-Item $Path -Recurse -Force -ErrorAction Stop
+        Write-Host "  [OK] $Label deleted" -ForegroundColor Green
+        return $true
+    } catch {
+        if (-not (Test-Path $Path)) {
+            Write-Host "  [OK] $Label deleted" -ForegroundColor Green
+            return $true
+        }
+
+        Write-Host "  [WARNING] Failed to fully delete ${Label}:" -ForegroundColor Yellow -NoNewline
+        Write-Host " $($_.Exception.Message)" -ForegroundColor DarkGray
+
+        $remaining = @(Get-ChildItem -Path $Path -Force -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 5 -ExpandProperty FullName)
+        if ($remaining.Count -gt 0) {
+            Write-Host "  Remaining items:" -ForegroundColor DarkYellow
+            foreach ($item in $remaining) {
+                Write-Host "    $item" -ForegroundColor DarkGray
+            }
+        }
+
+        return $false
+    }
+}
+
 function Clean-BuildCache {
     Write-Host "`n>>> Cleaning FilamentHub build cache..." -ForegroundColor Yellow
 
@@ -175,18 +212,17 @@ function Clean-FullBuild {
         return
     }
 
-    if (Test-Path $BuildDir) {
-        Remove-Item $BuildDir -Recurse -Force
-        Write-Host "  [OK] Build folder deleted" -ForegroundColor Green
-    } else {
-        Write-Host "  Build folder doesn't exist" -ForegroundColor DarkGray
-    }
+    try {
+        Remove-PathSafely -Path $BuildDir -Label "Build folder" | Out-Null
 
-    # Also clean VS cache
-    $vsDir = Join-Path $OrcaDir ".vs"
-    if (Test-Path $vsDir) {
-        Remove-Item $vsDir -Recurse -Force
-        Write-Host "  [OK] .vs folder deleted" -ForegroundColor Green
+        # Also clean VS cache
+        $vsDir = Join-Path $OrcaDir ".vs"
+        if (Test-Path $vsDir) {
+            Remove-PathSafely -Path $vsDir -Label ".vs folder" | Out-Null
+        }
+    } catch {
+        Write-Host "  [ERROR] Full clean failed:" -ForegroundColor Red -NoNewline
+        Write-Host " $($_.Exception.Message)" -ForegroundColor DarkGray
     }
 }
 
@@ -202,24 +238,24 @@ function Clean-Everything {
         return
     }
 
-    if (Test-Path $BuildDir) {
-        Remove-Item $BuildDir -Recurse -Force
-        Write-Host "  [OK] Build folder deleted" -ForegroundColor Green
-    }
+    try {
+        Remove-PathSafely -Path $BuildDir -Label "Build folder" | Out-Null
 
-    $depsBuild = Join-Path $DepsDir "build"
-    if (Test-Path $depsBuild) {
-        Remove-Item $depsBuild -Recurse -Force
-        Write-Host "  [OK] Deps build folder deleted" -ForegroundColor Green
-    }
+        $depsBuild = Join-Path $DepsDir "build"
+        if (Test-Path $depsBuild) {
+            Remove-PathSafely -Path $depsBuild -Label "Deps build folder" | Out-Null
+        }
 
-    $vsDir = Join-Path $OrcaDir ".vs"
-    if (Test-Path $vsDir) {
-        Remove-Item $vsDir -Recurse -Force
-        Write-Host "  [OK] .vs folder deleted" -ForegroundColor Green
-    }
+        $vsDir = Join-Path $OrcaDir ".vs"
+        if (Test-Path $vsDir) {
+            Remove-PathSafely -Path $vsDir -Label ".vs folder" | Out-Null
+        }
 
-    Write-Host "`n  Clean complete. Run [F] Full Build to rebuild from scratch." -ForegroundColor Yellow
+        Write-Host "`n  Clean complete. Run [F] Full Build to rebuild from scratch." -ForegroundColor Yellow
+    } catch {
+        Write-Host "  [ERROR] Nuclear clean failed:" -ForegroundColor Red -NoNewline
+        Write-Host " $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
 }
 
 # ============================================================
@@ -263,19 +299,77 @@ function Build-Deps {
     return $true
 }
 
+function Get-VersionNumeric {
+    # Extract numeric part from version string: "2.3.2-dev" → "2.3.2"
+    param([string]$Ver)
+    if ($Ver -match '^(\d+\.\d+\.\d+)') { return $Matches[1] }
+    return $Ver
+}
+
+function Bump-Version {
+    # Bump version: "2.3.2" + "patch" → "2.3.3", "minor" → "2.4.0", "major" → "3.0.0"
+    param([string]$Ver, [string]$Part)
+    $parts = $Ver.Split('.')
+    if ($parts.Count -lt 3) { return $Ver }
+    $major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
+    switch ($Part) {
+        "patch" { $patch++ }
+        "minor" { $minor++; $patch = 0 }
+        "major" { $major++; $minor = 0; $patch = 0 }
+    }
+    return "$major.$minor.$patch"
+}
+
 function Prompt-VersionBeforeBuild {
     $base = Get-BaseVersion
+    $numeric = Get-VersionNumeric $base
+    $patchBump = Bump-Version $numeric "patch"
+    $minorBump = Bump-Version $numeric "minor"
+
     Write-Host ""
-    Write-Host "  Base version (version.inc): " -NoNewline
-    Write-Host "$base" -ForegroundColor Cyan
-    Write-Host "  Build version:              " -NoNewline
+    Write-Host "  Current: " -NoNewline
     Write-Host "$Version" -ForegroundColor Yellow
-    $changeVer = Read-Host "  Change base version? (Enter = keep, or type new, e.g. 2.3.3-dev)"
-    if ($changeVer -and $changeVer -ne "") {
-        Set-BaseVersion $changeVer
+    Write-Host ""
+    Write-Host "  --- Version type ---" -ForegroundColor DarkCyan
+    Write-Host "  [1] dev      " -NoNewline -ForegroundColor White
+    Write-Host "→ $numeric-dev+fh" -ForegroundColor DarkGray
+    Write-Host "  [2] rc1      " -NoNewline -ForegroundColor White
+    Write-Host "→ $numeric-rc1+fh" -ForegroundColor DarkGray
+    Write-Host "  [3] rc2      " -NoNewline -ForegroundColor White
+    Write-Host "→ $numeric-rc2+fh" -ForegroundColor DarkGray
+    Write-Host "  [4] stable   " -NoNewline -ForegroundColor White
+    Write-Host "→ $numeric+fh" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  --- Bump version ---" -ForegroundColor DarkCyan
+    Write-Host "  [5] Next patch " -NoNewline -ForegroundColor White
+    Write-Host "→ $patchBump-dev+fh" -ForegroundColor DarkGray
+    Write-Host "  [6] Next minor " -NoNewline -ForegroundColor White
+    Write-Host "→ $minorBump-dev+fh" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  [C] Custom version" -ForegroundColor DarkGray
+    Write-Host "  [Enter] Keep current" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $choice = Read-Host "  Select"
+    $newBase = $null
+    switch ($choice) {
+        "1" { $newBase = "$numeric-dev" }
+        "2" { $newBase = "$numeric-rc1" }
+        "3" { $newBase = "$numeric-rc2" }
+        "4" { $newBase = "$numeric" }
+        "5" { $newBase = "$patchBump-dev" }
+        "6" { $newBase = "$minorBump-dev" }
+        "C" {
+            $custom = Read-Host "  Enter version (e.g. 2.3.3-dev, 2.4.0-rc1, 3.0.0)"
+            if ($custom -and $custom -ne "") { $newBase = $custom }
+        }
+    }
+
+    if ($newBase) {
+        Set-BaseVersion $newBase
         $script:Version = Get-FHVersion
-        Write-Host "  version.inc -> $changeVer" -ForegroundColor Green
-        Write-Host "  Build version -> $Version" -ForegroundColor Green
+        Write-Host "  [OK] " -NoNewline -ForegroundColor Green
+        Write-Host "Version → $Version" -ForegroundColor Yellow
     }
 }
 
@@ -1085,24 +1179,7 @@ function Check-BuildStatus {
 
 function Change-Version {
     Write-Host "`n>>> Change Version" -ForegroundColor Yellow
-    Write-Host ""
-    $base = Get-BaseVersion
-    Write-Host "  Base version (version.inc): $base" -ForegroundColor Cyan
-    Write-Host "  Build version:              $Version" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Enter the base version. '+fh' will be appended automatically." -ForegroundColor DarkGray
-    Write-Host "  Examples: 2.3.2-dev, 2.3.3, 2.4.0-rc1" -ForegroundColor DarkGray
-    Write-Host ""
-
-    $newVersion = Read-Host "  Enter new base version (or press Enter to cancel)"
-    if ($newVersion -and $newVersion -ne "") {
-        Set-BaseVersion $newVersion
-        $script:Version = Get-FHVersion
-        Write-Host "`n  [OK] version.inc -> $newVersion" -ForegroundColor Green
-        Write-Host "  [OK] Build version -> $Version" -ForegroundColor Green
-    } else {
-        Write-Host "`n  [CANCELLED]" -ForegroundColor DarkGray
-    }
+    Prompt-VersionBeforeBuild
 }
 
 function Sync-Upstream {

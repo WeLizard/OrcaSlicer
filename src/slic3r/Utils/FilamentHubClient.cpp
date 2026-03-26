@@ -33,8 +33,28 @@
 #include "nlohmann/json.hpp"
 #include <boost/log/trivial.hpp>
 #include <boost/format.hpp>
+#include <utility>
 
 namespace Slic3r {
+
+namespace {
+
+template <typename Callback, typename... Args>
+void invoke_callback_safe(const char* tag, const Callback& callback, Args&&... args)
+{
+    if (!callback)
+        return;
+
+    try {
+        callback(std::forward<Args>(args)...);
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: callback exception in " << tag << ": " << e.what();
+    } catch (...) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: unknown callback exception in " << tag;
+    }
+}
+
+} // namespace
 
 // Static member initialization
 const std::string FilamentHubClient::DEFAULT_API_BASE_URL = "https://filamenthub.ru";
@@ -206,12 +226,12 @@ void FilamentHubClient::get_current_user(
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get current user successful. Status: " << status;
                 cleanup_completed_requests();
-                on_complete(body, status);
+                invoke_callback_safe("get_current_user.on_complete", on_complete, std::move(body), status);
             })
             .on_error([this, on_error](std::string body, std::string error, unsigned status) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get current user failed. Error: " << error << ", Status: " << status;
                 cleanup_completed_requests();
-                on_error(body, error, status);
+                invoke_callback_safe("get_current_user.on_error", on_error, std::move(body), std::move(error), status);
             })
             .perform();
         store_request(request);
@@ -337,14 +357,15 @@ void FilamentHubClient::batch_download_profiles(
             .on_complete([this, on_complete, count = preset_ids.size()](std::string resp, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Batch download successful (" << count
                                         << " profiles). Status: " << status;
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] batch_download_profiles on_complete callback enter. Status: " << status;
                 cleanup_completed_requests();
-                on_complete(resp, status);
+                invoke_callback_safe("batch_download_profiles.on_complete", on_complete, std::move(resp), status);
             })
             .on_error([this, on_error](std::string resp, std::string error, unsigned status) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Batch download failed. Error: " << error
                                          << ", Status: " << status;
                 cleanup_completed_requests();
-                on_error(resp, error, status);
+                invoke_callback_safe("batch_download_profiles.on_error", on_error, std::move(resp), std::move(error), status);
             })
             .perform();
         store_request(request);
@@ -381,13 +402,7 @@ void FilamentHubClient::get_my_presets(
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my presets successful. Status: " << status << ", Body size: " << body.size() << " bytes";
                 cleanup_completed_requests();
-                if (on_complete) {
-                    try {
-                        on_complete(body, status);
-                    } catch (const std::exception& e) {
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in on_complete callback: " << e.what();
-                    }
-                }
+                invoke_callback_safe("get_my_presets.on_complete", on_complete, std::move(body), status);
             })
             .on_error([this, on_error](std::string body, std::string error, unsigned status) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Get my presets failed. Error: " << error << ", Status: " << status;
@@ -395,9 +410,7 @@ void FilamentHubClient::get_my_presets(
                     BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body: " << body;
                 }
                 cleanup_completed_requests();
-                if (on_error) {
-                    on_error(body, error, status);
-                }
+                invoke_callback_safe("get_my_presets.on_error", on_error, std::move(body), std::move(error), status);
             })
             .perform();
         store_request(request);
@@ -733,13 +746,14 @@ void FilamentHubClient::report_deleted_presets(
             .set_post_body(deleted_presets_json)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Deleted presets report successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC] report_deleted_presets on_complete callback enter. Status: " << status;
                 cleanup_completed_requests();
-                on_complete(body, status);
+                invoke_callback_safe("report_deleted_presets.on_complete", on_complete, std::move(body), status);
             })
             .on_error([this, on_error](std::string body, std::string error, unsigned status) {
                 BOOST_LOG_TRIVIAL(error) << "FilamentHub: Deleted presets report failed. Error: " << error << ", Status: " << status;
                 cleanup_completed_requests();
-                on_error(body, error, status);
+                invoke_callback_safe("report_deleted_presets.on_error", on_error, std::move(body), std::move(error), status);
             })
             .perform();
         store_request(request);

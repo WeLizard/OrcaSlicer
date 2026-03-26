@@ -3186,6 +3186,8 @@ void FilamentHubPanel::process_batch_export_response(
         CallAfter([this]() {
             m_active_syncs--;
             m_is_syncing.store(false);
+            if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+            if (m_sync_status_label) m_sync_status_label->Hide();
             if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
             m_info_panel->Layout();
             show_notification_in_webview(_L("Failed to parse batch download response."), "error");
@@ -3198,6 +3200,8 @@ void FilamentHubPanel::process_batch_export_response(
         CallAfter([this]() {
             m_active_syncs--;
             m_is_syncing.store(false);
+            if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+            if (m_sync_status_label) m_sync_status_label->Hide();
             if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
             m_info_panel->Layout();
             show_notification_in_webview(_L("Invalid batch download response."), "error");
@@ -3205,11 +3209,13 @@ void FilamentHubPanel::process_batch_export_response(
         return;
     }
 
-    // ---------- 2. Prepare temp files for each profile (background thread) ----------
+    // ---------- 2. Parse profiles on background thread (NO wxWidgets access!) ----------
+    // IMPORTANT: ensure_parent_preset_exists() accesses wxGetApp().preset_bundle
+    // which is NOT thread-safe. All preset_bundle access must happen on UI thread.
     struct PreparedPreset {
         int preset_id;
         std::string new_name;
-        boost::filesystem::path temp_file;
+        nlohmann::json profile_json; // stored here, temp file written on UI thread
         std::string info_content;
         bool ok { false };
         std::string error_msg;
@@ -3236,28 +3242,12 @@ void FilamentHubPanel::process_batch_export_response(
         }
 
         try {
-            nlohmann::json profile_json = item["config"];
-            std::string original_name = profile_json.value("name", "");
+            pp.profile_json = item["config"];
+            std::string original_name = pp.profile_json.value("name", "");
             if (original_name.empty() && presets_meta.count(pid))
                 original_name = presets_meta.at(pid);
             pp.new_name = ensure_filamenthub_postfix(original_name);
-            profile_json["name"] = pp.new_name;
-
-            ensure_parent_preset_exists(profile_json);
-
-            // Write temp file
-            boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
-            pp.temp_file = temp_dir / ("fhub_batch_" + std::to_string(pid) + "_" +
-                                       std::to_string(std::time(nullptr)) + ".json");
-            std::ofstream ofs(pp.temp_file.string());
-            if (!ofs.is_open()) {
-                pp.ok = false;
-                pp.error_msg = "Failed to create temp file";
-                prepared.push_back(std::move(pp));
-                continue;
-            }
-            ofs << profile_json.dump(2);
-            ofs.close();
+            pp.profile_json["name"] = pp.new_name;
 
             // Store .info content from batch response (no separate HTTP needed)
             if (item.contains("info") && item["info"].is_string())
@@ -3273,186 +3263,238 @@ void FilamentHubPanel::process_batch_export_response(
         prepared.push_back(std::move(pp));
     }
 
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Prepared " << prepared.size()
-                            << " presets for import. Posting to UI thread...";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Parsed " << prepared.size()
+                            << " presets. Posting to UI thread for import...";
 
     // ---------- 3. Import all on UI thread in one CallAfter ----------
-    CallAfter([this, prepared = std::move(prepared), user_id]() {
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] ========== UI thread import START ==========";
+    CallAfter([this, prepared = std::move(prepared), user_id]() mutable {
+        bool sync_ui_released = false;
 
-        PresetBundle* bundle = wxGetApp().preset_bundle;
-        if (bundle == nullptr) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] preset_bundle is null";
+        auto release_sync_ui = [this, &sync_ui_released]() {
+            if (sync_ui_released)
+                return;
+            sync_ui_released = true;
             m_active_syncs--;
             m_is_syncing.store(false);
+            if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+            if (m_sync_status_label) m_sync_status_label->Hide();
             if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
-            m_info_panel->Layout();
-            show_notification_in_webview(_L("Preset bundle not available."), "error");
-            return;
-        }
+            if (m_info_panel) m_info_panel->Layout();
+        };
 
-        int synced = 0;
-        int errors = 0;
-        std::vector<std::string> detail_lines;
+        auto fail_batch_sync = [this, &release_sync_ui](const wxString& message) {
+            release_sync_ui();
+            show_notification_in_webview(message, "error");
+        };
 
-        for (const auto& pp : prepared) {
-            if (!pp.ok) {
-                errors++;
-                detail_lines.push_back(pp.new_name + " — ERROR: " + pp.error_msg);
-                continue;
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] UI thread import callback entered";
+
+        try {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] ========== UI thread import START ==========";
+
+            PresetBundle* bundle = wxGetApp().preset_bundle;
+            if (bundle == nullptr) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] preset_bundle is null";
+                fail_batch_sync(_L("Preset bundle not available."));
+                return;
             }
 
-            // Import via existing OrcaSlicer import_json_presets
-            bool import_ok = false;
-            try {
-                PresetsConfigSubstitutions substitutions;
-                int overwrite = 1;
-                std::vector<std::string> import_result_vec;
-                auto override_confirm = [](std::string const&) -> int { return 1; };
-                std::string file_path = pp.temp_file.string();
+            int synced = 0;
+            int errors = 0;
+            std::vector<std::string> detail_lines;
 
-                import_ok = bundle->import_json_presets(
-                    substitutions, file_path, override_confirm,
-                    ForwardCompatibilitySubstitutionRule::Enable,
-                    overwrite, import_result_vec
-                );
+            for (auto& pp : prepared) {
+                if (!pp.ok) {
+                    errors++;
+                    detail_lines.push_back(pp.new_name + " — ERROR: " + pp.error_msg);
+                    continue;
+                }
 
-                if (import_ok || !import_result_vec.empty()) {
-                    save_preset_mapping(pp.preset_id, pp.new_name);
+                bool import_ok = false;
+                boost::filesystem::path temp_file;
+                try {
+                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Preparing UI-thread import for preset " << pp.preset_id;
+                    ensure_parent_preset_exists(pp.profile_json);
 
-                    // Write .info file directly (data already in batch response — no HTTP)
-                    if (!pp.info_content.empty()) {
-                        Preset* imported = bundle->filaments.find_preset2(pp.new_name, true);
-                        if (imported && !imported->file.empty()) {
-                            boost::filesystem::path info_path(imported->file);
-                            info_path.replace_extension(".info");
-                            try {
-                                boost::filesystem::ofstream info_ofs(info_path);
-                                if (info_ofs.is_open()) {
-                                    info_ofs << pp.info_content;
-                                    info_ofs.close();
+                    boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
+                    temp_file = temp_dir / ("fhub_batch_" + std::to_string(pp.preset_id) + "_" +
+                                           std::to_string(std::time(nullptr)) + ".json");
+                    {
+                        std::ofstream ofs(temp_file.string());
+                        if (!ofs.is_open()) {
+                            errors++;
+                            detail_lines.push_back(pp.new_name + " — ERROR: Failed to create temp file");
+                            continue;
+                        }
+                        ofs << pp.profile_json.dump(2);
+                        ofs.close();
+                    }
+
+                    PresetsConfigSubstitutions substitutions;
+                    int overwrite = 1;
+                    std::vector<std::string> import_result_vec;
+                    auto override_confirm = [](std::string const&) -> int { return 1; };
+                    std::string file_path = temp_file.string();
+
+                    import_ok = bundle->import_json_presets(
+                        substitutions, file_path, override_confirm,
+                        ForwardCompatibilitySubstitutionRule::Enable,
+                        overwrite, import_result_vec
+                    );
+
+                    try {
+                        if (!temp_file.empty())
+                            boost::filesystem::remove(temp_file);
+                    } catch (...) {}
+
+                    if (import_ok || !import_result_vec.empty()) {
+                        save_preset_mapping(pp.preset_id, pp.new_name);
+
+                        if (!pp.info_content.empty()) {
+                            Preset* imported = bundle->filaments.find_preset2(pp.new_name, true);
+                            if (imported && !imported->file.empty()) {
+                                boost::filesystem::path info_path(imported->file);
+                                info_path.replace_extension(".info");
+                                try {
+                                    boost::filesystem::ofstream info_ofs(info_path);
+                                    if (info_ofs.is_open()) {
+                                        info_ofs << pp.info_content;
+                                        info_ofs.close();
+                                    }
+                                } catch (const std::exception& e) {
+                                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] .info write failed: " << e.what();
                                 }
-                            } catch (const std::exception& e) {
-                                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] .info write failed: " << e.what();
-                            }
 
-                            // Update Preset object fields from .info
-                            if (imported) {
-                                std::istringstream info_stream(pp.info_content);
-                                std::string line;
-                                while (std::getline(info_stream, line)) {
-                                    if (line.empty() || line[0] == '#') continue;
-                                    size_t eq = line.find('=');
-                                    if (eq == std::string::npos) continue;
-                                    std::string key = line.substr(0, eq);
-                                    std::string val = line.substr(eq + 1);
-                                    boost::algorithm::trim(key);
-                                    boost::algorithm::trim(val);
-                                    if (key == "setting_id") imported->setting_id = val;
-                                    else if (key == "base_id") imported->base_id = val;
-                                    else if (key == "sync_info") imported->sync_info = val;
-                                    else if (key == "updated_time") {
-                                        try { imported->updated_time = std::stoll(val); } catch (...) {}
+                                if (imported) {
+                                    std::istringstream info_stream(pp.info_content);
+                                    std::string line;
+                                    while (std::getline(info_stream, line)) {
+                                        if (line.empty() || line[0] == '#') continue;
+                                        size_t eq = line.find('=');
+                                        if (eq == std::string::npos) continue;
+                                        std::string key = line.substr(0, eq);
+                                        std::string val = line.substr(eq + 1);
+                                        boost::algorithm::trim(key);
+                                        boost::algorithm::trim(val);
+                                        if (key == "setting_id") imported->setting_id = val;
+                                        else if (key == "base_id") imported->base_id = val;
+                                        else if (key == "sync_info") imported->sync_info = val;
+                                        else if (key == "updated_time") {
+                                            try { imported->updated_time = std::stoll(val); } catch (...) {}
+                                        }
                                     }
                                 }
                             }
                         }
+
+                        synced++;
+                        detail_lines.push_back(pp.new_name + " — OK");
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Preset " << pp.preset_id << " imported OK";
+                    } else {
+                        errors++;
+                        detail_lines.push_back(pp.new_name + " — ERROR: import_json_presets failed");
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] import_json_presets failed for " << pp.preset_id;
                     }
-
-                    synced++;
-                    detail_lines.push_back(pp.new_name + " — OK");
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Preset " << pp.preset_id << " imported OK";
-                } else {
+                } catch (const std::exception& e) {
+                    try {
+                        if (!temp_file.empty())
+                            boost::filesystem::remove(temp_file);
+                    } catch (...) {}
                     errors++;
-                    detail_lines.push_back(pp.new_name + " — ERROR: import_json_presets failed");
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] import_json_presets failed for " << pp.preset_id;
+                    detail_lines.push_back(pp.new_name + " — ERROR: " + e.what());
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Exception importing " << pp.preset_id << ": " << e.what();
                 }
-            } catch (const std::exception& e) {
-                errors++;
-                detail_lines.push_back(pp.new_name + " — ERROR: " + e.what());
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Exception importing " << pp.preset_id << ": " << e.what();
             }
 
-            // Cleanup temp file
-            try { boost::filesystem::remove(pp.temp_file); } catch (...) {}
-        }
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Before load_current_presets";
+            wxGetApp().load_current_presets();
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] After load_current_presets";
 
-        // ---------- 4. Finalize (same as end of process_preset_import_queue) ----------
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] All done. Calling load_current_presets()...";
-        wxGetApp().load_current_presets();
-
-        bool no_errors = (errors == 0);
-        if (no_errors && user_id > 0) {
-            std::time_t now = std::time(nullptr);
-            std::stringstream ss;
-            ss << std::put_time(std::gmtime(&now), "%Y-%m-%dT%H:%M:%S.000000");
-            std::string ts = ss.str();
-            save_last_sync_time(user_id, ts, SyncTimestampType::Filament);
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Saved last_sync_time=" << ts;
-        } else if (!no_errors) {
-            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Sync had " << errors
-                                       << " errors — last_sync_time NOT updated";
-        }
-
-        m_full_sync_attempted.store(false);
-        send_command_to_webview("sync_complete");
-
-        m_active_syncs--;
-        m_is_syncing.store(false);
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Sync completed. Synced: " << synced << ", Errors: " << errors;
-
-        // Notification
-        {
-            bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
-            wxString message;
-            if (no_errors)
-                message = wxString::Format(_L("Synced %d filament presets."), synced);
-            else
-                message = wxString::Format(_L("Synced %d filament presets: %d successful, %d errors."),
-                                           synced + errors, synced, errors);
-            if (dev_mode && !detail_lines.empty()) {
-                message += "\n";
-                for (const auto& l : detail_lines)
-                    message += "\n" + wxString::FromUTF8(l.c_str());
+            bool no_errors = (errors == 0);
+            if (no_errors && user_id > 0) {
+                std::time_t now = std::time(nullptr);
+                std::stringstream ss;
+                ss << std::put_time(std::gmtime(&now), "%Y-%m-%dT%H:%M:%S.000000");
+                std::string ts = ss.str();
+                save_last_sync_time(user_id, ts, SyncTimestampType::Filament);
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Saved last_sync_time=" << ts;
+            } else if (!no_errors) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Sync had " << errors
+                                           << " errors — last_sync_time NOT updated";
             }
-            show_notification_in_webview(message, no_errors ? "success" : "warning");
-        }
 
-        if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
-        if (m_sync_status_label) m_sync_status_label->Hide();
-        if (m_active_syncs <= 0) { update_sync_button_state(false); m_active_syncs = 0; }
-        m_info_panel->Layout();
-        update_user_info();
-        update_unread_notifications_count();
+            m_full_sync_attempted.store(false);
+            send_command_to_webview("sync_complete");
 
-        if (!no_errors) {
-            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Skipping printer/print export due to errors";
-            return;
-        }
+            release_sync_ui();
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Sync completed. Synced: " << synced << ", Errors: " << errors;
 
-        // Auto-export printer + print profiles (same as original flow)
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [BATCH] Checking permissions for printer/print export...";
-        std::string token;
-        int uid = 0;
-        if (load_auth_token(token, uid)) {
-            check_user_permissions(token,
-                [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
-                    CallAfter([this, token, printer_import, print_import]() {
-                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                        int cnt = 0;
-                        if (printer_import) cnt++;
-                        if (print_import) cnt++;
-                        if (cnt == 0) return;
-                        m_is_syncing.store(true);
-                        m_active_exports.store(cnt);
-                        if (printer_import) export_printer_profiles_to_filamenthub_internal(token, api_url);
-                        if (print_import) export_print_profiles_to_filamenthub_internal(token, api_url);
-                    });
-                },
-                [](std::string error, unsigned status) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions: " << error;
+            {
+                bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
+                wxString message;
+                if (no_errors)
+                    message = wxString::Format(_L("Synced %d filament presets."), synced);
+                else
+                    message = wxString::Format(_L("Synced %d filament presets: %d successful, %d errors."),
+                                               synced + errors, synced, errors);
+                if (dev_mode && !detail_lines.empty()) {
+                    message += "\n";
+                    for (const auto& l : detail_lines)
+                        message += "\n" + wxString::FromUTF8(l.c_str());
                 }
-            );
+                show_notification_in_webview(message, no_errors ? "success" : "warning");
+            }
+
+            update_user_info();
+            update_unread_notifications_count();
+
+            if (!no_errors) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Skipping printer/print export due to errors";
+                return;
+            }
+
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Before auto-export permission check";
+            std::string token;
+            int uid = 0;
+            if (load_auth_token(token, uid)) {
+                check_user_permissions(token,
+                    [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                        CallAfter([this, token, printer_import, print_import]() {
+                            try {
+                                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [BATCH] Auto-export handoff callback entered";
+                                std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                                int cnt = 0;
+                                if (printer_import) cnt++;
+                                if (print_import) cnt++;
+                                if (cnt == 0) return;
+                                m_is_syncing.store(true);
+                                m_active_exports.store(cnt);
+                                if (printer_import) export_printer_profiles_to_filamenthub_internal(token, api_url);
+                                if (print_import) export_print_profiles_to_filamenthub_internal(token, api_url);
+                            } catch (const std::exception& e) {
+                                m_is_syncing.store(false);
+                                m_active_exports.store(0);
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Auto-export handoff exception: " << e.what();
+                                show_notification_in_webview(_L("Imported filament presets, but failed to start printer/profile export."), "warning");
+                            } catch (...) {
+                                m_is_syncing.store(false);
+                                m_active_exports.store(0);
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Unknown auto-export handoff exception";
+                                show_notification_in_webview(_L("Imported filament presets, but failed to start printer/profile export."), "warning");
+                            }
+                        });
+                    },
+                    [](std::string error, unsigned status) {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions: " << error;
+                    }
+                );
+            }
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Outer UI import exception: " << e.what();
+            fail_batch_sync(_L("Batch preset import failed due to an internal error."));
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [BATCH] Unknown outer UI import exception";
+            fail_batch_sync(_L("Batch preset import failed due to an internal error."));
         }
     });
 

@@ -807,11 +807,20 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
     
     try {
         nlohmann::json j = nlohmann::json::parse(str_input.ToUTF8().data());
-        
+
+        if (!j.contains("command") || !j["command"].is_string()) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Script message missing 'command' key";
+            return;
+        }
         wxString command = j["command"].get<std::string>();
         wxString sequence_id = j.value("sequence_id", "");
-        
+
         if (command == "import_profile") {
+            if (!j.contains("data") || !j["data"].contains("preset_id")) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: import_profile missing data.preset_id";
+                send_response("import_profile", "error", "Missing preset_id in message", sequence_id);
+                return;
+            }
             int preset_id = j["data"]["preset_id"].get<int>();
             
             // Проверяем валидность preset_id (должен быть > 0)
@@ -832,6 +841,11 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
             import_profile(preset_id, sequence_id);
         } else if (command == "login_success") {
             // User logged in successfully via WebView
+            if (!j.contains("data") || !j["data"].contains("access_token")) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: login_success missing data.access_token";
+                send_response("login_success", "error", "Missing access_token in message", sequence_id);
+                return;
+            }
             std::string access_token = j["data"]["access_token"].get<std::string>();
 
             // Сохраняем refresh_token если передан
@@ -859,6 +873,10 @@ void FilamentHubPanel::OnScriptMessage(wxWebViewEvent& evt)
                     [this, access_token, refresh_token](std::string json_body, unsigned http_status) {
                         try {
                             nlohmann::json user_json = nlohmann::json::parse(json_body);
+                            if (!user_json.contains("id")) {
+                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: User response missing 'id' field";
+                                return;
+                            }
                             int user_id = user_json["id"].get<int>();
                             process_login_success(access_token, refresh_token, user_id);
                         } catch (const std::exception& e) {
@@ -1045,18 +1063,19 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
     std::string profile_payload = std::move(result->body);
 
     CallAfter([this, preset_id, sequence_id, profile_payload = std::move(profile_payload)]() mutable {
+        boost::filesystem::path temp_file; // Declared before try for cleanup in catch
         try {
             nlohmann::json profile_json = nlohmann::json::parse(profile_payload);
-                
+
             std::string original_name = profile_json.value("name", std::string());
                 std::string new_name = ensure_filamenthub_postfix(original_name);
                 profile_json["name"] = new_name;
-                
+
                 ensure_parent_preset_exists(profile_json);
-                
+
                 boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path();
-            boost::filesystem::path temp_file = temp_dir / ("filamenthub_preset_" + std::to_string(preset_id) + "_" + std::to_string(std::time(nullptr)) + ".json");
-                
+            temp_file = temp_dir / ("filamenthub_preset_" + std::to_string(preset_id) + "_" + std::to_string(std::time(nullptr)) + ".json");
+
                 std::ofstream file(temp_file.string());
                 if (!file.is_open()) {
                 wxString message = _L("Failed to create temporary file for imported profile.");
@@ -1064,10 +1083,10 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
                 wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_ERROR);
                     return;
                 }
-                
+
                 file << profile_json.dump(2);
                 file.close();
-                
+
                 PresetBundle* bundle = wxGetApp().preset_bundle;
                 if (bundle == nullptr) {
                 wxString message = _L("Preset bundle not available");
@@ -1076,14 +1095,14 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
                 boost::filesystem::remove(temp_file);
                     return;
                 }
-                
+
                 PresetsConfigSubstitutions substitutions;
                 std::string file_path = temp_file.string();
             int overwrite = 1;
             std::vector<std::string> import_result;
-                
+
             auto override_confirm = [](std::string const&) -> int { return 1; };
-                
+
                 bool success = bundle->import_json_presets(
                     substitutions,
                     file_path,
@@ -1092,15 +1111,15 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
                     overwrite,
                 import_result
                 );
-                
+
                 boost::filesystem::remove(temp_file);
-                
+
                 if (success) {
                     wxGetApp().load_current_presets();
-                    send_response("import_profile", "success", 
+                    send_response("import_profile", "success",
                     wxString::Format(_L("Profile %d imported successfully"), preset_id).ToUTF8().data(),
                         sequence_id);
-                    
+
                     wxMessageBox(
                         wxString::Format(_L("Profile %d imported successfully from FilamentHub."), preset_id),
                         _L("FilamentHub Import"),
@@ -1116,6 +1135,9 @@ void FilamentHubPanel::import_profile_internal(int preset_id, const wxString& se
                     );
                 }
             } catch (const std::exception& e) {
+            if (!temp_file.empty()) {
+                try { boost::filesystem::remove(temp_file); } catch (...) {}
+            }
             wxString message = wxString::Format(_L("Error importing profile: %s"), wxString::FromUTF8(e.what()));
             send_response("import_profile", "error", message.ToUTF8().data(), sequence_id);
             wxMessageBox(message, _L("FilamentHub Import Error"), wxOK | wxICON_ERROR);
@@ -1387,6 +1409,11 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
             try {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 10] Parsing JSON response...";
                 nlohmann::json response = nlohmann::json::parse(json_body);
+                if (!response.contains("items") || !response["items"].is_array()) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 10] Response missing 'items' array";
+                    m_active_syncs--;
+                    return;
+                }
                 std::vector<nlohmann::json> presets = response["items"];
                 int total = response.value("total", 0);
                 
@@ -1513,6 +1540,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 
                 // Создаем set из ID пресетов с сервера
                 for (const auto& preset_json : presets) {
+                    if (!preset_json.contains("id")) continue;
                     int preset_id = preset_json["id"];
                     server_preset_ids.insert(preset_id);
                 }
@@ -1520,9 +1548,10 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 // Проверяем каждый пресет с сервера на наличие в маппинге и PresetBundle
                 // Если пресет есть в маппинге, но НЕ существует в PresetBundle, значит он был удален локально
                 for (const auto& preset_json : presets) {
+                    if (!preset_json.contains("id") || !preset_json.contains("name")) continue;
                     int preset_id = preset_json["id"];
                     std::string preset_name = preset_json["name"];
-                    
+
                     // Проверяем маппинг
                     std::string bundle_preset_name = load_preset_mapping(preset_id);
                     
@@ -1585,6 +1614,7 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                 std::vector<int> preset_ids;
                 std::map<int, std::string> presets_meta; // id → name
                 for (const auto& preset_json : presets) {
+                    if (!preset_json.contains("id")) continue;
                     int pid = preset_json["id"];
                     preset_ids.push_back(pid);
                     presets_meta[pid] = json_string_value_or(preset_json, "name", "");

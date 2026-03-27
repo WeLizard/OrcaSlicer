@@ -66,10 +66,41 @@ public:
      */
     void cancel_all();
 
-    // API base URL (configurable, defaults to localhost:8000 for development)
+    // API base URL (configurable, defaults to production)
     static const std::string DEFAULT_API_BASE_URL;
     static std::string get_api_base_url();
     static void set_api_base_url(const std::string& url);
+
+    // API endpoint paths
+    static constexpr const char* API_HEALTH                    = "/health";
+    static constexpr const char* API_AUTH_LOGIN                 = "/api/v1/auth/login";
+    static constexpr const char* API_AUTH_ME                    = "/api/v1/auth/me";
+    static constexpr const char* API_AUTH_MY_PRESETS            = "/api/v1/auth/my-presets";
+    static constexpr const char* API_AUTH_PRESETS_STATS         = "/api/v1/auth/me/presets-stats";
+    static constexpr const char* API_PRESETS_BASE               = "/api/v1/presets/";
+    static constexpr const char* API_EXPORT_JSON_SUFFIX         = "/export/orcaslicer.json";
+    static constexpr const char* API_EXPORT_INFO_SUFFIX         = "/export/orcaslicer.info";
+    static constexpr const char* API_BATCH_EXPORT               = "/api/v1/orcaslicer/presets/batch-export";
+    static constexpr const char* API_PRINTER_PROFILES           = "/api/v1/orcaslicer/printer-profiles";
+    static constexpr const char* API_PRINT_PROFILES             = "/api/v1/orcaslicer/print-profiles";
+    static constexpr const char* API_PRINTER_PROFILES_BASE      = "/api/v1/printer-profiles/";
+    static constexpr const char* API_PRINT_PROFILES_BASE        = "/api/v1/print-profiles/";
+    static constexpr const char* API_PRINTER_PROFILES_IMPORT    = "/api/v1/orcaslicer/printer-profiles/import";
+    static constexpr const char* API_PRINT_PROFILES_IMPORT      = "/api/v1/orcaslicer/print-profiles/import";
+    static constexpr const char* API_FILAMENTS_IMPORT           = "/api/v1/orcaslicer/filaments/import";
+    static constexpr const char* API_DELETED_PRESETS            = "/api/v1/orcaslicer/deleted-presets";
+    static constexpr const char* API_NOTIFICATIONS_UNREAD_COUNT = "/api/v1/notifications/unread-count";
+    static constexpr const char* API_SPOOL_PRESET_MAPPING       = "/api/v1/orcaslicer/spool-preset-mapping";
+
+    // Timeout constants (seconds)
+    static constexpr int TIMEOUT_CONNECT_DEFAULT = 10;
+    static constexpr int TIMEOUT_MAX_DEFAULT     = 30;
+    static constexpr int TIMEOUT_CONNECT_HEALTH  = 5;
+    static constexpr int TIMEOUT_MAX_HEALTH      = 10;
+    static constexpr int TIMEOUT_CONNECT_BATCH   = 10;
+    static constexpr int TIMEOUT_MAX_BATCH       = 60;
+    static constexpr int TIMEOUT_CONNECT_SPOOL   = 3;
+    static constexpr int TIMEOUT_MAX_SPOOL       = 5;
 
     /**
      * \brief Test connection to FilamentHub API

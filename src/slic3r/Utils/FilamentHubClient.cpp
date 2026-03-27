@@ -120,15 +120,15 @@ bool FilamentHubClient::test_connection(
 {
     try {
         // Try /health first (simple health check endpoint)
-        std::string url = s_api_base_url + "/health";
+        std::string url = s_api_base_url + API_HEALTH;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .timeout_connect(5)
-            .timeout_max(10)
+            .timeout_connect(TIMEOUT_CONNECT_HEALTH)
+            .timeout_max(TIMEOUT_MAX_HEALTH)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Connection test successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Connection test successful. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -141,10 +141,10 @@ bool FilamentHubClient::test_connection(
                     auto fallback_request = Http::get(root_url)
                         .header("Content-Type", "application/json")
                         .header("Accept", "application/json")
-                        .timeout_connect(5)
-                        .timeout_max(10)
+                        .timeout_connect(TIMEOUT_CONNECT_HEALTH)
+                        .timeout_max(TIMEOUT_MAX_HEALTH)
                         .on_complete([this, on_complete](std::string body, unsigned status) {
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Connection test successful (root endpoint). Status: " << status;
+                            BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Connection test successful (root endpoint). Status: " << status;
                             cleanup_completed_requests();
                             on_complete(body, status);
                         })
@@ -178,7 +178,7 @@ void FilamentHubClient::login(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/auth/login";
+        std::string url = s_api_base_url + API_AUTH_LOGIN;
 
         nlohmann::json payload;
         payload["email_or_username"] = email_or_username;
@@ -188,8 +188,8 @@ void FilamentHubClient::login(
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .set_post_body(payload.dump())
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Login successful. Status: " << status;
                 cleanup_completed_requests();
@@ -215,16 +215,16 @@ void FilamentHubClient::get_current_user(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/auth/me";
+        std::string url = s_api_base_url + API_AUTH_ME;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get current user successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Get current user successful. Status: " << status;
                 cleanup_completed_requests();
                 invoke_callback_safe("get_current_user.on_complete", on_complete, std::move(body), status);
             })
@@ -269,16 +269,16 @@ void FilamentHubClient::download_profile(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/presets/" + std::to_string(preset_id) + "/export/orcaslicer.json";
+        std::string url = s_api_base_url + API_PRESETS_BASE + std::to_string(preset_id) + API_EXPORT_JSON_SUFFIX;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Profile download successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Profile download successful. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -303,16 +303,16 @@ void FilamentHubClient::download_profile_info(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/presets/" + std::to_string(preset_id) + "/export/orcaslicer.info";
+        std::string url = s_api_base_url + API_PRESETS_BASE + std::to_string(preset_id) + API_EXPORT_INFO_SUFFIX;
 
         auto request = Http::get(url)
             .header("Content-Type", "text/plain")
             .header("Accept", "text/plain")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: .info file download successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: .info file download successful. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -337,7 +337,7 @@ void FilamentHubClient::batch_download_profiles(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/presets/batch-export";
+        std::string url = s_api_base_url + API_BATCH_EXPORT;
 
         // Build JSON body: {"preset_ids": [1, 2, 3, ...]}
         nlohmann::json payload;
@@ -352,8 +352,8 @@ void FilamentHubClient::batch_download_profiles(
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
             .set_post_body(body)
-            .timeout_connect(10)
-            .timeout_max(60) // larger timeout for batch
+            .timeout_connect(TIMEOUT_CONNECT_BATCH)
+            .timeout_max(TIMEOUT_MAX_BATCH)
             .on_complete([this, on_complete, count = preset_ids.size()](std::string resp, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Batch download successful (" << count
                                         << " profiles). Status: " << status;
@@ -383,24 +383,24 @@ void FilamentHubClient::get_my_presets(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/auth/my-presets";
+        std::string url = s_api_base_url + API_AUTH_MY_PRESETS;
 
         // Добавляем query параметр updated_since если указан
         if (!updated_since.empty()) {
             url += "?updated_since=" + Http::url_encode(updated_since);
         }
 
-        BOOST_LOG_TRIVIAL(info) << "FilamentHub: get_my_presets() called. URL: " << url
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: get_my_presets() called. URL: " << url
                                 << ", updated_since: " << (updated_since.empty() ? "(empty)" : updated_since);
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my presets successful. Status: " << status << ", Body size: " << body.size() << " bytes";
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Get my presets successful. Status: " << status << ", Body size: " << body.size() << " bytes";
                 cleanup_completed_requests();
                 invoke_callback_safe("get_my_presets.on_complete", on_complete, std::move(body), status);
             })
@@ -430,7 +430,7 @@ void FilamentHubClient::get_my_printer_profiles(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/printer-profiles";
+        std::string url = s_api_base_url + API_PRINTER_PROFILES;
 
         // Добавляем query параметры
         bool has_query = false;
@@ -445,10 +445,10 @@ void FilamentHubClient::get_my_printer_profiles(
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my printer profiles successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Get my printer profiles successful. Status: " << status;
                 cleanup_completed_requests();
                 if (on_complete) {
                     on_complete(body, status);
@@ -479,7 +479,7 @@ void FilamentHubClient::get_my_print_profiles(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/print-profiles";
+        std::string url = s_api_base_url + API_PRINT_PROFILES;
 
         // Добавляем query параметры
         bool has_query = false;
@@ -494,10 +494,10 @@ void FilamentHubClient::get_my_print_profiles(
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Get my print profiles successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Get my print profiles successful. Status: " << status;
                 cleanup_completed_requests();
                 if (on_complete) {
                     on_complete(body, status);
@@ -528,16 +528,16 @@ void FilamentHubClient::download_printer_profile(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/printer-profiles/" + std::to_string(profile_id) + "/export/orcaslicer.json";
+        std::string url = s_api_base_url + API_PRINTER_PROFILES_BASE + std::to_string(profile_id) + API_EXPORT_JSON_SUFFIX;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profile download successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Printer profile download successful. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -562,16 +562,16 @@ void FilamentHubClient::download_print_profile(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/print-profiles/" + std::to_string(profile_id) + "/export/orcaslicer.json";
+        std::string url = s_api_base_url + API_PRINT_PROFILES_BASE + std::to_string(profile_id) + API_EXPORT_JSON_SUFFIX;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profile download successful. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Print profile download successful. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -596,15 +596,15 @@ void FilamentHubClient::import_printer_profiles(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/printer-profiles/import";
+        std::string url = s_api_base_url + API_PRINTER_PROFILES_IMPORT;
 
         auto request = Http::post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
             .set_post_body(profiles_json)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles import successful. Status: " << status;
                 cleanup_completed_requests();
@@ -631,15 +631,15 @@ void FilamentHubClient::import_print_profiles(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/print-profiles/import";
+        std::string url = s_api_base_url + API_PRINT_PROFILES_IMPORT;
 
         auto request = Http::post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
             .set_post_body(profiles_json)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles import successful. Status: " << status;
                 cleanup_completed_requests();
@@ -666,15 +666,15 @@ void FilamentHubClient::import_filament_presets(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/filaments/import";
+        std::string url = s_api_base_url + API_FILAMENTS_IMPORT;
 
         auto request = Http::post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
             .set_post_body(presets_json)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets import successful. Status: " << status;
                 cleanup_completed_requests();
@@ -701,14 +701,14 @@ void FilamentHubClient::delete_preset(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/presets/" + std::to_string(preset_id);
+        std::string url = s_api_base_url + API_PRESETS_BASE + std::to_string(preset_id);
 
         auto request = Http::del(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Preset deletion successful. Status: " << status;
                 cleanup_completed_requests();
@@ -735,14 +735,14 @@ void FilamentHubClient::report_deleted_presets(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/orcaslicer/deleted-presets";
+        std::string url = s_api_base_url + API_DELETED_PRESETS;
 
         auto request = Http::post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .set_post_body(deleted_presets_json)
             .on_complete([this, on_complete](std::string body, unsigned status) {
                 BOOST_LOG_TRIVIAL(info) << "FilamentHub: Deleted presets report successful. Status: " << status;
@@ -770,16 +770,16 @@ void FilamentHubClient::get_unread_notifications_count(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/notifications/unread-count";
+        std::string url = s_api_base_url + API_NOTIFICATIONS_UNREAD_COUNT;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Unread notifications count retrieved. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Unread notifications count retrieved. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -803,16 +803,16 @@ void FilamentHubClient::get_presets_stats(
 )
 {
     try {
-        std::string url = s_api_base_url + "/api/v1/auth/me/presets-stats";
+        std::string url = s_api_base_url + API_AUTH_PRESETS_STATS;
 
         auto request = Http::get(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header("Authorization", "Bearer " + access_token)
-            .timeout_connect(10)
-            .timeout_max(30)
+            .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+            .timeout_max(TIMEOUT_MAX_DEFAULT)
             .on_complete([this, on_complete](std::string body, unsigned status) {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Presets stats retrieved. Status: " << status;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Presets stats retrieved. Status: " << status;
                 cleanup_completed_requests();
                 on_complete(body, status);
             })
@@ -837,7 +837,7 @@ std::map<int, int> FilamentHubClient::resolve_spool_presets_sync(
     if (access_token.empty() || spool_ids.empty())
         return result;
 
-    std::string url = get_api_base_url() + "/api/v1/orcaslicer/spool-preset-mapping?spool_ids=" + spool_ids;
+    std::string url = get_api_base_url() + API_SPOOL_PRESET_MAPPING + std::string("?spool_ids=") + spool_ids;
     std::string response_body;
     bool ok = false;
 
@@ -845,8 +845,8 @@ std::map<int, int> FilamentHubClient::resolve_spool_presets_sync(
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .header("Authorization", "Bearer " + access_token)
-        .timeout_connect(3)
-        .timeout_max(5)
+        .timeout_connect(TIMEOUT_CONNECT_SPOOL)
+        .timeout_max(TIMEOUT_MAX_SPOOL)
         .on_complete([&](std::string body, unsigned status) {
             if (status == 200) {
                 response_body = std::move(body);
@@ -875,7 +875,7 @@ std::map<int, int> FilamentHubClient::resolve_spool_presets_sync(
         result[spool_id] = preset_id;
     }
 
-    BOOST_LOG_TRIVIAL(info) << "FilamentHub: resolve_spool_presets_sync resolved " << result.size() << " spools";
+    BOOST_LOG_TRIVIAL(debug) << "FilamentHub: resolve_spool_presets_sync resolved " << result.size() << " spools";
     return result;
 }
 

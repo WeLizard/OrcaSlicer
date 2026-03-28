@@ -101,6 +101,11 @@ public:
     static constexpr int TIMEOUT_MAX_BATCH       = 60;
     static constexpr int TIMEOUT_CONNECT_SPOOL   = 3;
     static constexpr int TIMEOUT_MAX_SPOOL       = 5;
+    static constexpr int TIMEOUT_MAX_IMPORT      = 120; // Large preset/profile exports need more time
+
+    // Retry constants
+    static constexpr int RETRY_MAX_ATTEMPTS       = 3;
+    static constexpr int RETRY_INITIAL_DELAY_MS   = 500; // Doubles each attempt (exponential backoff)
 
     /**
      * \brief Test connection to FilamentHub API
@@ -452,6 +457,27 @@ public:
     );
 
 private:
+    /**
+     * \brief Perform an HTTP request with automatic retry on transient failures
+     *
+     * Retries on timeout (status 0), 429 Too Many Requests, and 5xx server errors.
+     * Uses exponential backoff between attempts. The build_request lambda is called
+     * each retry to create a fresh Http object (since Http is non-copyable).
+     *
+     * \param tag Method name for logging
+     * \param build_request Factory that returns a configured Http (without callbacks)
+     * \param on_complete Success callback
+     * \param on_error Final error callback (called after all retries exhausted)
+     * \param max_retries Maximum number of attempts (default: RETRY_MAX_ATTEMPTS)
+     */
+    void perform_with_retry(
+        const char* tag,
+        std::function<Http()> build_request,
+        Http::CompleteFn on_complete,
+        Http::ErrorFn on_error,
+        int max_retries = RETRY_MAX_ATTEMPTS
+    );
+
     /**
      * \brief Store an active request to prevent premature destruction
      *

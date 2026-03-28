@@ -45,6 +45,7 @@
 #include <set>
 #include <vector>
 #include <wx/msgdlg.h>
+#include <wx/timer.h>
 #include <mutex>
 #include <condition_variable>
 #include <thread>
@@ -353,39 +354,46 @@ void FilamentHubPanel::report_deleted_presets_to_backend(
 void FilamentHubPanel::trigger_silent_profile_export()
 {
     // Called on UI thread. Auto-exports printer/print profiles after empty filament sync.
+    // Deferred via wxTimer to avoid blocking UI thread immediately after sync.
     std::string token;
     int uid = 0;
     if (!load_auth_token(token, uid)) return;
 
-    check_user_permissions(token,
-        [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
-            if (printer_import) {
-                CallAfter([this, token]() {
-                    try {
-                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                        m_active_exports.fetch_add(1);
-                        export_printer_profiles_to_filamenthub_internal(token, api_url);
-                    } catch (const std::exception& e) {
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent printer export exception: " << e.what();
-                    }
-                });
+    auto* timer = new wxTimer();
+    timer->Bind(wxEVT_TIMER, [this, token, timer](wxTimerEvent&) {
+        timer->Stop();
+        delete timer;
+        check_user_permissions(token,
+            [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                if (printer_import) {
+                    CallAfter([this, token]() {
+                        try {
+                            std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                            m_active_exports.fetch_add(1);
+                            export_printer_profiles_to_filamenthub_internal(token, api_url);
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent printer export exception: " << e.what();
+                        }
+                    });
+                }
+                if (print_import) {
+                    CallAfter([this, token]() {
+                        try {
+                            std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                            m_active_exports.fetch_add(1);
+                            export_print_profiles_to_filamenthub_internal(token, api_url);
+                        } catch (const std::exception& e) {
+                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent print export exception: " << e.what();
+                        }
+                    });
+                }
+            },
+            [](std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
             }
-            if (print_import) {
-                CallAfter([this, token]() {
-                    try {
-                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                        m_active_exports.fetch_add(1);
-                        export_print_profiles_to_filamenthub_internal(token, api_url);
-                    } catch (const std::exception& e) {
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent print export exception: " << e.what();
-                    }
-                });
-            }
-        },
-        [](std::string error, unsigned status) {
-            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
-        }
-    );
+        );
+    });
+    timer->StartOnce(2000); // 2 second delay to let UI settle
 }
 
 void FilamentHubPanel::handle_presets_list_response(
@@ -903,41 +911,48 @@ void FilamentHubPanel::process_preset_import_queue()
             }
 
             // Silent auto-export printer/print profiles (don't re-grab m_is_syncing — UI already released)
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Scheduling silent auto-export...";
+            // Deferred via wxTimer to avoid blocking UI thread immediately after sync
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Scheduling silent auto-export (deferred 2s)...";
             std::string token;
             int uid = 0;
             if (load_auth_token(token, uid)) {
-                check_user_permissions(token,
-                    [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
-                        if (printer_import) {
-                            CallAfter([this, token]() {
-                                try {
-                                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Silent auto-export: printer profiles";
-                                    std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                                    m_active_exports.fetch_add(1);
-                                    export_printer_profiles_to_filamenthub_internal(token, api_url);
-                                } catch (const std::exception& e) {
-                                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [QUEUE] Silent printer export exception: " << e.what();
-                                }
-                            });
+                auto* timer = new wxTimer();
+                timer->Bind(wxEVT_TIMER, [this, token, timer](wxTimerEvent&) {
+                    timer->Stop();
+                    delete timer;
+                    check_user_permissions(token,
+                        [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+                            if (printer_import) {
+                                CallAfter([this, token]() {
+                                    try {
+                                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Silent auto-export: printer profiles";
+                                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                                        m_active_exports.fetch_add(1);
+                                        export_printer_profiles_to_filamenthub_internal(token, api_url);
+                                    } catch (const std::exception& e) {
+                                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [QUEUE] Silent printer export exception: " << e.what();
+                                    }
+                                });
+                            }
+                            if (print_import) {
+                                CallAfter([this, token]() {
+                                    try {
+                                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Silent auto-export: print profiles";
+                                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                                        m_active_exports.fetch_add(1);
+                                        export_print_profiles_to_filamenthub_internal(token, api_url);
+                                    } catch (const std::exception& e) {
+                                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [QUEUE] Silent print export exception: " << e.what();
+                                    }
+                                });
+                            }
+                        },
+                        [](std::string error, unsigned status) {
+                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
                         }
-                        if (print_import) {
-                            CallAfter([this, token]() {
-                                try {
-                                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [QUEUE] Silent auto-export: print profiles";
-                                    std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                                    m_active_exports.fetch_add(1);
-                                    export_print_profiles_to_filamenthub_internal(token, api_url);
-                                } catch (const std::exception& e) {
-                                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [QUEUE] Silent print export exception: " << e.what();
-                                }
-                            });
-                        }
-                    },
-                    [](std::string error, unsigned status) {
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
-                    }
-                );
+                    );
+                });
+                timer->StartOnce(2000); // 2 second delay to let UI settle
             }
         });
         return;

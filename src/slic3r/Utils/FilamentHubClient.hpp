@@ -470,9 +470,12 @@ private:
      * \param on_error Final error callback (called after all retries exhausted)
      * \param max_retries Maximum number of attempts (default: RETRY_MAX_ATTEMPTS)
      */
+    /** Executor lambda: receives wrapped on_complete/on_error, builds Http, attaches them, calls .perform(), store_request(). */
+    using RequestExecutor = std::function<void(Http::CompleteFn, Http::ErrorFn)>;
+
     void perform_with_retry(
         const char* tag,
-        std::function<Http()> build_request,
+        RequestExecutor execute_request,
         Http::CompleteFn on_complete,
         Http::ErrorFn on_error,
         int max_retries = RETRY_MAX_ATTEMPTS

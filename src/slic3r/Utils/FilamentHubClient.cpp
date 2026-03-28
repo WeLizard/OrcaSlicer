@@ -118,7 +118,7 @@ void FilamentHubClient::cleanup_completed_requests()
 
 void FilamentHubClient::perform_with_retry(
     const char* tag,
-    std::function<Http()> build_request,
+    RequestExecutor execute_request,
     Http::CompleteFn on_complete,
     Http::ErrorFn on_error,
     int max_retries)
@@ -127,35 +127,35 @@ void FilamentHubClient::perform_with_retry(
     auto tag_str = std::make_shared<std::string>(tag);
     auto try_request = std::make_shared<std::function<void()>>();
 
-    *try_request = [this, build_request, on_complete, on_error, max_retries, attempt, tag_str, try_request]() {
+    *try_request = [this, execute_request, on_complete, on_error, max_retries, attempt, tag_str, try_request]() {
         (*attempt)++;
         try {
-            auto request = build_request()
-                .on_complete([this, on_complete, tag_str](std::string body, unsigned status) {
-                    cleanup_completed_requests();
-                    invoke_callback_safe(tag_str->c_str(), on_complete, std::move(body), status);
-                })
-                .on_error([this, on_error, max_retries, attempt, tag_str, try_request](std::string body, std::string error, unsigned status) {
-                    cleanup_completed_requests();
+            Http::CompleteFn wrapped_complete = [this, on_complete, tag_str](std::string body, unsigned status) {
+                cleanup_completed_requests();
+                invoke_callback_safe(tag_str->c_str(), on_complete, std::move(body), status);
+            };
 
-                    if (*attempt < max_retries && is_retryable_error(status)) {
-                        int delay_ms = RETRY_INITIAL_DELAY_MS * (1 << (*attempt - 1));
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: " << *tag_str
-                            << " failed (attempt " << *attempt << "/" << max_retries
-                            << ", status=" << status << "), retrying in " << delay_ms << "ms...";
-                        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-                        (*try_request)();
-                    } else {
-                        if (*attempt > 1) {
-                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: " << *tag_str
-                                << " failed after " << *attempt << " attempts";
-                        }
-                        invoke_callback_safe((*tag_str + ".on_error").c_str(), on_error,
-                            std::move(body), std::move(error), status);
+            Http::ErrorFn wrapped_error = [this, on_error, max_retries, attempt, tag_str, try_request](std::string body, std::string error, unsigned status) {
+                cleanup_completed_requests();
+
+                if (*attempt < max_retries && is_retryable_error(status)) {
+                    int delay_ms = RETRY_INITIAL_DELAY_MS * (1 << (*attempt - 1));
+                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: " << *tag_str
+                        << " failed (attempt " << *attempt << "/" << max_retries
+                        << ", status=" << status << "), retrying in " << delay_ms << "ms...";
+                    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                    (*try_request)();
+                } else {
+                    if (*attempt > 1) {
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: " << *tag_str
+                            << " failed after " << *attempt << " attempts";
                     }
-                })
-                .perform();
-            store_request(request);
+                    invoke_callback_safe((*tag_str + ".on_error").c_str(), on_error,
+                        std::move(body), std::move(error), status);
+                }
+            };
+
+            execute_request(std::move(wrapped_complete), std::move(wrapped_error));
         } catch (const std::exception& e) {
             BOOST_LOG_TRIVIAL(error) << "FilamentHub: Exception in " << *tag_str << ": " << e.what();
             invoke_callback_safe((*tag_str + ".on_error").c_str(), on_error,
@@ -280,13 +280,17 @@ void FilamentHubClient::get_current_user(
     std::string url = s_api_base_url + API_AUTH_ME;
 
     perform_with_retry("get_current_user",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -321,13 +325,17 @@ void FilamentHubClient::download_profile(
     std::string url = s_api_base_url + API_PRESETS_BASE + std::to_string(preset_id) + API_EXPORT_JSON_SUFFIX;
 
     perform_with_retry("download_profile",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -342,13 +350,17 @@ void FilamentHubClient::download_profile_info(
     std::string url = s_api_base_url + API_PRESETS_BASE + std::to_string(preset_id) + API_EXPORT_INFO_SUFFIX;
 
     perform_with_retry("download_profile_info",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "text/plain")
                 .header("Accept", "text/plain")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -370,14 +382,18 @@ void FilamentHubClient::batch_download_profiles(
                             << " profiles (" << body.size() << " bytes)";
 
     perform_with_retry("batch_download_profiles",
-        [url, access_token, body]() {
-            return Http::post(url)
+        [this, url, access_token, body](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::post(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .set_post_body(body)
                 .timeout_connect(TIMEOUT_CONNECT_BATCH)
-                .timeout_max(TIMEOUT_MAX_BATCH);
+                .timeout_max(TIMEOUT_MAX_BATCH)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -397,13 +413,17 @@ void FilamentHubClient::get_my_presets(
     BOOST_LOG_TRIVIAL(debug) << "FilamentHub: get_my_presets() URL: " << url;
 
     perform_with_retry("get_my_presets",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -424,13 +444,17 @@ void FilamentHubClient::get_my_printer_profiles(
     url += (has_query ? "&" : "?") + std::string("include_official=true");
 
     perform_with_retry("get_my_printer_profiles",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -451,13 +475,17 @@ void FilamentHubClient::get_my_print_profiles(
     url += (has_query ? "&" : "?") + std::string("include_official=true");
 
     perform_with_retry("get_my_print_profiles",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -472,13 +500,17 @@ void FilamentHubClient::download_printer_profile(
     std::string url = s_api_base_url + API_PRINTER_PROFILES_BASE + std::to_string(profile_id) + API_EXPORT_JSON_SUFFIX;
 
     perform_with_retry("download_printer_profile",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -493,13 +525,17 @@ void FilamentHubClient::download_print_profile(
     std::string url = s_api_base_url + API_PRINT_PROFILES_BASE + std::to_string(profile_id) + API_EXPORT_JSON_SUFFIX;
 
     perform_with_retry("download_print_profile",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -514,14 +550,18 @@ void FilamentHubClient::import_printer_profiles(
     std::string url = s_api_base_url + API_PRINTER_PROFILES_IMPORT;
 
     perform_with_retry("import_printer_profiles",
-        [url, access_token, profiles_json]() {
-            return Http::post(url)
+        [this, url, access_token, profiles_json](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::post(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .set_post_body(profiles_json)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_IMPORT);
+                .timeout_max(TIMEOUT_MAX_IMPORT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -536,14 +576,18 @@ void FilamentHubClient::import_print_profiles(
     std::string url = s_api_base_url + API_PRINT_PROFILES_IMPORT;
 
     perform_with_retry("import_print_profiles",
-        [url, access_token, profiles_json]() {
-            return Http::post(url)
+        [this, url, access_token, profiles_json](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::post(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .set_post_body(profiles_json)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_IMPORT);
+                .timeout_max(TIMEOUT_MAX_IMPORT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -558,14 +602,18 @@ void FilamentHubClient::import_filament_presets(
     std::string url = s_api_base_url + API_FILAMENTS_IMPORT;
 
     perform_with_retry("import_filament_presets",
-        [url, access_token, presets_json]() {
-            return Http::post(url)
+        [this, url, access_token, presets_json](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::post(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .set_post_body(presets_json)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_IMPORT);
+                .timeout_max(TIMEOUT_MAX_IMPORT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -614,14 +662,18 @@ void FilamentHubClient::report_deleted_presets(
     std::string url = s_api_base_url + API_DELETED_PRESETS;
 
     perform_with_retry("report_deleted_presets",
-        [url, access_token, deleted_presets_json]() {
-            return Http::post(url)
+        [this, url, access_token, deleted_presets_json](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::post(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .set_post_body(deleted_presets_json)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -635,13 +687,17 @@ void FilamentHubClient::get_unread_notifications_count(
     std::string url = s_api_base_url + API_NOTIFICATIONS_UNREAD_COUNT;
 
     perform_with_retry("get_unread_notifications_count",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }
@@ -655,13 +711,17 @@ void FilamentHubClient::get_presets_stats(
     std::string url = s_api_base_url + API_AUTH_PRESETS_STATS;
 
     perform_with_retry("get_presets_stats",
-        [url, access_token]() {
-            return Http::get(url)
+        [this, url, access_token](Http::CompleteFn complete, Http::ErrorFn error) {
+            auto request = Http::get(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
                 .header("Authorization", "Bearer " + access_token)
                 .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
-                .timeout_max(TIMEOUT_MAX_DEFAULT);
+                .timeout_max(TIMEOUT_MAX_DEFAULT)
+                .on_complete(std::move(complete))
+                .on_error(std::move(error))
+                .perform();
+            store_request(request);
         },
         on_complete, on_error);
 }

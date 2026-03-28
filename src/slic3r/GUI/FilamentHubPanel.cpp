@@ -75,16 +75,6 @@
 namespace Slic3r {
 namespace GUI {
 
-// Helper function to serialize DynamicPrintConfig to JSON
-{
-    auto it = object.find(key);
-    if (it == object.end() || it->is_null())
-        return default_value;
-    if (!it->is_string())
-        return default_value;
-    return it->get<std::string>();
-}
-
 // Static member initialization
 const wxString FilamentHubPanel::DEFAULT_FRONTEND_URL = "https://filamenthub.ru";
 const std::string FilamentHubPanel::CONFIG_SECTION_FILAMENTHUB = "filamenthub";

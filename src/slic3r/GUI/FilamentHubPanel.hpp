@@ -199,6 +199,45 @@ private:
      */
     void continue_sync_after_token_validation(int user_id, bool force_full_sync, const std::string& api_base_url, const std::string& access_token);
 
+    // --- Decomposed sync helpers (called from continue_sync_after_token_validation) ---
+
+    /** Handle get_my_presets on_complete callback. Called on background HTTP thread. */
+    void handle_presets_list_response(
+        std::string json_body, unsigned http_status,
+        int user_id, bool force_full_sync,
+        const std::string& updated_since,
+        const std::string& api_base_url,
+        const std::string& access_token);
+
+    /** Handle get_my_presets on_error callback. Called on background HTTP thread. */
+    void handle_presets_list_error(
+        std::string body, std::string error, unsigned http_status);
+
+    /** Process 200 OK presets list: parse, empty-check, batch download, deleted presets. Called on background thread. */
+    void process_successful_presets_list(
+        const std::string& json_body,
+        int user_id, bool force_full_sync,
+        const std::string& updated_since,
+        const std::string& api_base_url,
+        const std::string& access_token);
+
+    /** Handle 401 token expiry during sync: reset UI, schedule retry or show message. Called on UI thread. */
+    void handle_sync_token_expired();
+
+    /** Detect locally deleted presets by comparing server list with PresetBundle. Called on background thread. */
+    std::vector<nlohmann::json> detect_deleted_presets(
+        const std::vector<nlohmann::json>& server_presets,
+        bool force_full_sync);
+
+    /** Report deleted presets to backend API. Called from background thread, uses CallAfter internally. */
+    void report_deleted_presets_to_backend(
+        const std::vector<nlohmann::json>& deleted_list,
+        const std::string& access_token,
+        const std::string& api_base_url);
+
+    /** Auto-export printer/print profiles when filament presets list is empty. Called on UI thread. */
+    void trigger_silent_profile_export();
+
     /**
      * \brief Synchronize user printer profiles from FilamentHub
      * 

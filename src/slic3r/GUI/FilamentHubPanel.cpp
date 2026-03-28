@@ -1243,9 +1243,554 @@ void FilamentHubPanel::synchronize_presets(bool force_full_sync)
     continue_sync_after_token_validation(user_id, force_full_sync, api_base_url, access_token);
 }
 
+// ============================================================================
+// Decomposed sync helpers
+// ============================================================================
+
+void FilamentHubPanel::handle_sync_token_expired()
+{
+    // Called on UI thread (from CallAfter). Handles 401 response during sync.
+    m_is_syncing.store(false);
+    if (m_sync_progress) m_sync_progress->Hide();
+    if (m_sync_status_label) m_sync_status_label->Hide();
+    update_sync_button_state(false);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
+    if (m_active_syncs < 0) m_active_syncs = 0;
+    m_info_panel->Layout();
+
+    if (!m_sync_retry_attempted.load()) {
+        m_sync_retry_attempted.store(true);
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scheduling silent sync retry in 2 seconds...";
+        std::thread([this]() {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            CallAfter([this]() {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Executing silent sync retry after token refresh wait...";
+                synchronize_presets(false);
+            });
+        }).detach();
+    } else {
+        m_sync_retry_attempted.store(false);
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Retry also failed (401). Showing session expired message.";
+        show_notification_in_webview(
+            _L("Your session has expired. Please login again."),
+            "warning"
+        );
+    }
+}
+
+std::vector<nlohmann::json> FilamentHubPanel::detect_deleted_presets(
+    const std::vector<nlohmann::json>& server_presets,
+    bool force_full_sync)
+{
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13] Detecting deleted presets...";
+
+    std::vector<nlohmann::json> deleted_presets_list;
+    std::set<int> server_preset_ids;
+
+    for (const auto& preset_json : server_presets) {
+        if (!preset_json.contains("id")) continue;
+        server_preset_ids.insert(preset_json["id"].get<int>());
+    }
+
+    // Check each server preset against local PresetBundle
+    for (const auto& preset_json : server_presets) {
+        if (!preset_json.contains("id") || !preset_json.contains("name")) continue;
+        int preset_id = preset_json["id"];
+        std::string preset_name = preset_json["name"];
+
+        std::string bundle_preset_name = load_preset_mapping(preset_id);
+
+        if (!bundle_preset_name.empty()) {
+            bool preset_exists = preset_exists_in_bundle(bundle_preset_name);
+
+            if (!preset_exists) {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 13.1] Preset " << preset_id
+                                           << " (" << preset_name
+                                           << ") is mapped to '" << bundle_preset_name
+                                           << "' but preset not found in bundle (deleted locally)";
+
+                nlohmann::json deleted_preset;
+                deleted_preset["preset_id"] = preset_id;
+                deleted_preset["preset_name"] = preset_name;
+                deleted_preset["bundle_preset_name"] = bundle_preset_name;
+                deleted_presets_list.push_back(deleted_preset);
+
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.1.1] Added preset " << preset_id
+                                       << " to deleted presets list (was deleted locally, but exists on server)";
+            }
+        }
+    }
+
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size()
+                             << " deleted presets (deleted locally, but exist on server)";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size()
+                            << " deleted presets (deleted locally, but exist on server)";
+
+    // Clean up orphaned mappings (only during full sync)
+    if (force_full_sync) {
+        std::vector<int> all_mapped_ids = get_all_mapped_preset_ids();
+        int orphaned_count = 0;
+        for (int mapped_id : all_mapped_ids) {
+            if (server_preset_ids.find(mapped_id) == server_preset_ids.end()) {
+                remove_preset_mapping(mapped_id);
+                orphaned_count++;
+            }
+        }
+        if (orphaned_count > 0) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.3] Cleaned up " << orphaned_count
+                                   << " orphaned preset mappings";
+        }
+    }
+
+    return deleted_presets_list;
+}
+
+void FilamentHubPanel::report_deleted_presets_to_backend(
+    const std::vector<nlohmann::json>& deleted_list,
+    const std::string& access_token,
+    const std::string& api_base_url)
+{
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15] Found " << deleted_list.size()
+                             << " deleted presets. Reporting to backend...";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] Found " << deleted_list.size()
+                            << " deleted presets. Reporting to backend...";
+
+    std::string access_token_for_report = access_token;
+    std::string api_base_url_for_report = api_base_url;
+    std::vector<nlohmann::json> deleted_presets_for_report = deleted_list;
+    size_t deleted_presets_count = deleted_list.size();
+
+    CallAfter([this, access_token_for_report, api_base_url_for_report, deleted_presets_for_report, deleted_presets_count]() {
+        nlohmann::json deleted_presets_request;
+        deleted_presets_request["deleted_presets"] = deleted_presets_for_report;
+        std::string deleted_presets_json = deleted_presets_request.dump();
+
+        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 15.1] Deleted presets JSON: " << deleted_presets_json;
+
+        FilamentHubClient report_client;
+        report_client.set_api_base_url(api_base_url_for_report);
+
+        report_client.report_deleted_presets(
+            access_token_for_report,
+            deleted_presets_json,
+            [this, deleted_presets_count](std::string body, unsigned status) {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2] Deleted presets reported successfully. Status: " << status
+                                       << ", Count: " << deleted_presets_count;
+                if (status == 200) {
+                    try {
+                        nlohmann::json response = nlohmann::json::parse(body);
+                        std::string message = response.value("message", "");
+                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2.1] Backend response: " << message;
+                        if (response.contains("notification_id")) {
+                            int notification_id = response.value("notification_id", 0);
+                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2.2] Notification created with ID: " << notification_id;
+                        }
+                    } catch (const std::exception& e) {
+                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 15.2.1] Error parsing backend response: " << e.what();
+                    }
+                }
+            },
+            [this](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15.2] Failed to report deleted presets. Error: " << error
+                                        << ", Status: " << status;
+            }
+        );
+    });
+}
+
+void FilamentHubPanel::trigger_silent_profile_export()
+{
+    // Called on UI thread. Auto-exports printer/print profiles after empty filament sync.
+    std::string token;
+    int uid = 0;
+    if (!load_auth_token(token, uid)) return;
+
+    check_user_permissions(token,
+        [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
+            if (printer_import) {
+                CallAfter([this, token]() {
+                    try {
+                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                        m_active_exports.fetch_add(1);
+                        export_printer_profiles_to_filamenthub_internal(token, api_url);
+                    } catch (const std::exception& e) {
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent printer export exception: " << e.what();
+                    }
+                });
+            }
+            if (print_import) {
+                CallAfter([this, token]() {
+                    try {
+                        std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
+                        m_active_exports.fetch_add(1);
+                        export_print_profiles_to_filamenthub_internal(token, api_url);
+                    } catch (const std::exception& e) {
+                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent print export exception: " << e.what();
+                    }
+                });
+            }
+        },
+        [](std::string error, unsigned status) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
+        }
+    );
+}
+
+void FilamentHubPanel::handle_presets_list_response(
+    std::string json_body, unsigned http_status,
+    int user_id, bool force_full_sync,
+    const std::string& updated_since,
+    const std::string& api_base_url,
+    const std::string& access_token)
+{
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9] ========== on_complete CALLBACK (get_my_presets) ==========";
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9.0] Lambda function called from FilamentHubPanel!";
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9.1] HTTP status: " << http_status
+                             << ", Body size: " << json_body.size() << " bytes";
+
+    // Handle 401 token expired
+    if (http_status == 401) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_complete, "
+                                   << "waiting for frontend auto-refresh before retry...";
+        CallAfter([this]() { handle_sync_token_expired(); });
+        return;
+    }
+
+    // Handle 403 access denied
+    if (http_status == 403) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Access denied (403) during presets sync. Body: " << json_body;
+        try {
+            nlohmann::json error_json = nlohmann::json::parse(json_body);
+            std::string error_detail = error_json.value("detail", "Access denied");
+            CallAfter([this, error_detail]() {
+                m_is_syncing.store(false);
+                if (m_sync_progress) m_sync_progress->Hide();
+                if (m_sync_status_label) m_sync_status_label->Hide();
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (403). Active syncs: " << m_active_syncs;
+                if (m_active_syncs <= 0) {
+                    update_sync_button_state(false);
+                    m_active_syncs = 0;
+                }
+                m_info_panel->Layout();
+                show_notification_in_webview(
+                    wxString::Format(_L("Access denied: %s"), wxString::FromUTF8(error_detail.c_str())),
+                    "warning"
+                );
+            });
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing 403 response: " << e.what();
+            CallAfter([this]() {
+                m_is_syncing.store(false);
+                if (m_sync_progress) m_sync_progress->Hide();
+                if (m_sync_status_label) m_sync_status_label->Hide();
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (403, parse error). Active syncs: " << m_active_syncs;
+                if (m_active_syncs <= 0) {
+                    update_sync_button_state(false);
+                    m_active_syncs = 0;
+                }
+                m_info_panel->Layout();
+                show_notification_in_webview(
+                    _L("Access denied. Please check your permissions in FilamentHub settings."),
+                    "warning"
+                );
+            });
+        }
+        return;
+    }
+
+    // Handle other non-200 errors
+    if (http_status != 200) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Failed to get presets list. Status: " << http_status;
+        CallAfter([this, http_status]() {
+            m_is_syncing.store(false);
+            if (m_sync_progress) m_sync_progress->Hide();
+            if (m_sync_status_label) m_sync_status_label->Hide();
+            update_sync_button_state(false);
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (status " << http_status << "). Active syncs: " << m_active_syncs;
+            if (m_active_syncs < 0) m_active_syncs = 0;
+            m_info_panel->Layout();
+            show_notification_in_webview(
+                wxString::Format(_L("Failed to get presets list. Status: %d"), http_status),
+                "error"
+            );
+        });
+        return;
+    }
+
+    // 200 OK — process presets list
+    process_successful_presets_list(json_body, user_id, force_full_sync, updated_since, api_base_url, access_token);
+}
+
+void FilamentHubPanel::handle_presets_list_error(
+    std::string body, std::string error, unsigned http_status)
+{
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: ========== on_error CALLBACK (get_my_presets) ==========";
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets list. Error: '" << error << "'"
+                             << ", Status: " << http_status << ", Body size: " << body.size() << " bytes";
+    if (body.size() < 500) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body: " << body;
+    } else {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body (first 500 chars): " << body.substr(0, 500);
+    }
+
+    // Handle 401 token expired
+    if (http_status == 401) {
+        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_error callback, "
+                                   << "waiting for frontend auto-refresh before retry...";
+        CallAfter([this]() { handle_sync_token_expired(); });
+        return;
+    }
+
+    // Build error message based on status
+    wxString error_msg;
+    if (http_status == 403) {
+        try {
+            nlohmann::json error_json = nlohmann::json::parse(body);
+            std::string error_detail = error_json.value("detail", "Access denied");
+            error_msg = wxString::Format(_L("Access denied: %s"), wxString::FromUTF8(error_detail.c_str()));
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing 403 response in on_error: " << e.what();
+            error_msg = _L("Access denied. Please check your permissions in FilamentHub settings.");
+        }
+    } else if (http_status >= 500) {
+        error_msg = _L("Server error. Please try again later.");
+    } else {
+        error_msg = wxString::Format(_L("Failed to sync presets: %s"), wxString::FromUTF8(error.c_str()));
+    }
+
+    CallAfter([this, error_msg, http_status]() {
+        m_is_syncing.store(false);
+        if (m_sync_progress) m_sync_progress->Hide();
+        if (m_sync_status_label) m_sync_status_label->Hide();
+            update_sync_button_state(false);
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync failed (error: " << error_msg.ToUTF8()
+                                 << ", status: " << http_status << "). Active syncs: " << m_active_syncs;
+            if (m_active_syncs < 0) {
+                m_active_syncs = 0;
+            }
+            m_info_panel->Layout();
+            show_notification_in_webview(
+                error_msg,
+                http_status == 403 ? "warning" : "error"
+            );
+        });
+}
+
+void FilamentHubPanel::process_successful_presets_list(
+    const std::string& json_body,
+    int user_id, bool force_full_sync,
+    const std::string& updated_since,
+    const std::string& api_base_url,
+    const std::string& access_token)
+{
+    // Increment active syncs only after 200 OK
+    m_active_syncs++;
+    m_sync_retry_attempted.store(false);
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 9.2] Incremented m_active_syncs for filament presets (after 200 OK). Active syncs: " << m_active_syncs;
+
+    try {
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 10] Parsing JSON response...";
+        nlohmann::json response = nlohmann::json::parse(json_body);
+        if (!response.contains("items") || !response["items"].is_array()) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 10] Response missing 'items' array";
+            m_active_syncs--;
+            return;
+        }
+        std::vector<nlohmann::json> presets = response["items"];
+        int total = response.value("total", 0);
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 11] Received " << total << " presets (items: " << presets.size() << ")";
+
+        // Check if full sync retry is needed (empty result with incremental sync)
+        if (presets.empty() && !force_full_sync && !updated_since.empty() && !m_full_sync_attempted.load()) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] API returned empty list, but last_sync_time exists. "
+                                       << "This might indicate locally deleted presets. Performing full sync to restore all presets...";
+            m_full_sync_attempted.store(true);
+            save_last_sync_time(user_id, "", SyncTimestampType::Filament);
+            m_active_syncs--;
+            CallAfter([this]() {
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Restarting sync with force_full_sync=true to restore deleted presets";
+                m_is_syncing.store(false);
+                if (m_sync_progress) m_sync_progress->Hide();
+                if (m_sync_status_label) m_sync_status_label->Hide();
+                m_info_panel->Layout();
+                synchronize_presets(true);
+            });
+            return;
+        } else if (presets.empty() && !force_full_sync && !updated_since.empty() && m_full_sync_attempted.load()) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] Full sync already attempted, skipping to prevent infinite loop";
+            m_active_syncs--;
+            CallAfter([this]() {
+                m_is_syncing.store(false);
+                if (m_sync_progress) m_sync_progress->Hide();
+                if (m_sync_status_label) m_sync_status_label->Hide();
+                update_sync_button_state(false);
+                m_info_panel->Layout();
+                show_notification_in_webview(
+                    _L("No presets to sync. All presets may have sync disabled."),
+                    "info"
+                );
+            });
+            return;
+        }
+
+        // Handle empty presets list (normal case)
+        if (presets.empty()) {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 12] No presets to sync (empty list)";
+            CallAfter([this]() {
+                m_active_syncs--;
+                m_is_syncing.store(false);
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
+                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EMPTY] Scheduling silent auto-export...";
+                trigger_silent_profile_export();
+                if (m_sync_progress) m_sync_progress->Hide();
+                if (m_sync_status_label) m_sync_status_label->Hide();
+                if (m_active_syncs <= 0) {
+                    update_sync_button_state(false);
+                    m_active_syncs = 0;
+                }
+                m_info_panel->Layout();
+            });
+            return;
+        }
+
+        // Detect deleted presets
+        auto deleted_presets_list = detect_deleted_presets(presets, force_full_sync);
+
+        // Batch-download all preset configs in ONE HTTP request
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14] Batch-downloading " << presets.size() << " preset configs...";
+
+        std::vector<int> preset_ids;
+        std::map<int, std::string> presets_meta;
+        for (const auto& preset_json : presets) {
+            if (!preset_json.contains("id")) continue;
+            int pid = preset_json["id"];
+            preset_ids.push_back(pid);
+            presets_meta[pid] = json_string_value_or(preset_json, "name", "");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
+            m_total_presets_to_sync = presets.size();
+            m_synced_count = 0;
+            m_error_count = 0;
+            m_sync_detail_lines.clear();
+        }
+
+        int user_id_for_batch = user_id;
+        std::string access_token_for_batch = access_token;
+
+        m_fhub_client->batch_download_profiles(
+            preset_ids,
+            access_token,
+            // on_complete: all profiles downloaded in one response
+            [this, presets_meta, user_id_for_batch, access_token_for_batch](std::string batch_body, unsigned batch_status) {
+                if (batch_status != 200) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Batch download failed. Status: " << batch_status;
+                    CallAfter([this, batch_status]() {
+                        m_active_syncs--;
+                        m_is_syncing.store(false);
+                        if (m_active_syncs <= 0) {
+                            update_sync_button_state(false);
+                            m_active_syncs = 0;
+                        }
+                        m_info_panel->Layout();
+                        show_notification_in_webview(
+                            wxString::Format(_L("Failed to download presets. Status: %d"), batch_status),
+                            "error"
+                        );
+                    });
+                    return;
+                }
+                try {
+                    process_batch_export_response(batch_body, presets_meta, user_id_for_batch, access_token_for_batch);
+                } catch (const std::exception& e) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] process_batch_export_response threw: " << e.what();
+                    CallAfter([this]() {
+                        m_active_syncs--;
+                        m_is_syncing.store(false);
+                        if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+                        if (m_sync_status_label) m_sync_status_label->Hide();
+                        if (m_active_syncs <= 0) {
+                            update_sync_button_state(false);
+                            m_active_syncs = 0;
+                        }
+                        if (m_info_panel) m_info_panel->Layout();
+                        show_notification_in_webview(_L("Failed to process batch preset response."), "error");
+                    });
+                } catch (...) {
+                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] process_batch_export_response threw unknown exception";
+                    CallAfter([this]() {
+                        m_active_syncs--;
+                        m_is_syncing.store(false);
+                        if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
+                        if (m_sync_status_label) m_sync_status_label->Hide();
+                        if (m_active_syncs <= 0) {
+                            update_sync_button_state(false);
+                            m_active_syncs = 0;
+                        }
+                        if (m_info_panel) m_info_panel->Layout();
+                        show_notification_in_webview(_L("Failed to process batch preset response."), "error");
+                    });
+                }
+            },
+            // on_error: batch download network failure
+            [this](std::string body, std::string error, unsigned status) {
+                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Batch download error: " << error;
+                CallAfter([this, error]() {
+                    m_active_syncs--;
+                    m_is_syncing.store(false);
+                    if (m_active_syncs <= 0) {
+                        update_sync_button_state(false);
+                        m_active_syncs = 0;
+                    }
+                    m_info_panel->Layout();
+                    show_notification_in_webview(
+                        wxString::Format(_L("Failed to download presets: %s"), wxString::FromUTF8(error.c_str())),
+                        "error"
+                    );
+                });
+            }
+        );
+
+        // Report deleted presets to backend (if any)
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15.0] Checking deleted_presets_list. Size: " << deleted_presets_list.size();
+        if (!deleted_presets_list.empty()) {
+            report_deleted_presets_to_backend(deleted_presets_list, access_token, api_base_url);
+        } else {
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] No deleted presets found";
+        }
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16] Presets added to queue. last_sync_time will be updated after all presets are imported.";
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 17] ========== Synchronization started ==========";
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 17.1] Summary - Presets to import: " << presets.size()
+                               << ", Deleted presets detected: " << deleted_presets_list.size();
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Presets added to queue, processing will continue in UI thread";
+
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing presets list: " << e.what();
+        CallAfter([this, e]() {
+            m_active_syncs--;
+            m_is_syncing.store(false);
+            if (m_sync_progress) m_sync_progress->Hide();
+            if (m_sync_status_label) m_sync_status_label->Hide();
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (parse error). Active syncs: " << m_active_syncs;
+            if (m_active_syncs <= 0) {
+                update_sync_button_state(false);
+                m_active_syncs = 0;
+            }
+            m_info_panel->Layout();
+            show_notification_in_webview(
+                wxString::Format(_L("Error parsing presets list: %s"), e.what()),
+                "error"
+            );
+        });
+    }
+}
+
 void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool force_full_sync, const std::string& api_base_url, const std::string& access_token)
 {
-    // 2. Получаем last_sync_time для инкрементальной синхронизации
+    // Load last_sync_time for incremental sync
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 5] Loading last_sync_time from AppConfig...";
     std::string updated_since;
     if (!force_full_sync) {
@@ -1253,10 +1798,9 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 6] Incremental sync, last_sync_time=" << updated_since;
     } else {
         BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 6] Full sync requested, updated_since=''";
-        updated_since = "";
     }
-    
-    // 3. Получаем список пресетов пользователя через API (используем persistent клиент)
+
+    // Call get_my_presets API — callbacks delegate to extracted methods
     m_fhub_client->set_api_base_url(api_base_url);
 
     BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 8] Calling get_my_presets API: " << api_base_url
@@ -1264,663 +1808,17 @@ void FilamentHubPanel::continue_sync_after_token_validation(int user_id, bool fo
                             << ", token_length=" << access_token.length();
 
     m_fhub_client->get_my_presets(
-            access_token,
-            updated_since,
-            // on_complete: список пресетов получен
-            [this, user_id, force_full_sync, updated_since, api_base_url, access_token](std::string json_body, unsigned http_status) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9] ========== on_complete CALLBACK (get_my_presets) ==========";
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9.0] Lambda function called from FilamentHubPanel!";
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 9.1] HTTP status: " << http_status 
-                                        << ", Body size: " << json_body.size() << " bytes";
-            
-            // Проверяем статус ответа
-            if (http_status == 401) {
-                // Токен истек — НЕ показываем сообщение сразу.
-                // Фронтенд автоматически рефрешит токен через refresh_token.
-                // Делаем тихий retry через 2 секунды. Сообщение — только если retry тоже 401.
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_complete, "
-                                           << "waiting for frontend auto-refresh before retry...";
-                CallAfter([this]() {
-                    m_is_syncing.store(false);
-                    if (m_sync_progress) {
-                        m_sync_progress->Hide();
-                    }
-                    if (m_sync_status_label) {
-                        m_sync_status_label->Hide();
-                    }
-                    update_sync_button_state(false);
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs < 0) {
-                        m_active_syncs = 0;
-                    }
-                    m_info_panel->Layout();
-                    if (!m_sync_retry_attempted.load()) {
-                        m_sync_retry_attempted.store(true);
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scheduling silent sync retry in 2 seconds...";
-                        std::thread([this]() {
-                            std::this_thread::sleep_for(std::chrono::seconds(2));
-                            CallAfter([this]() {
-                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Executing silent sync retry after token refresh wait...";
-                                synchronize_presets(false);
-                            });
-                        }).detach();
-                    } else {
-                        m_sync_retry_attempted.store(false);
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Retry also failed (401). Showing session expired message.";
-                        show_notification_in_webview(
-                            _L("Your session has expired. Please login again."),
-                            "warning"
-                        );
-                    }
-                });
-                return;
-            }
-            
-            if (http_status == 403) {
-                // Доступ запрещен - проверяем детали ошибки
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Access denied (403) during presets sync. Body: " << json_body;
-                // Не уменьшаем счетчик - он не был увеличен для этой синхронизации (увеличивается только после 200 OK)
-                try {
-                    nlohmann::json error_json = nlohmann::json::parse(json_body);
-                    std::string error_detail = error_json.value("detail", "Access denied");
-                    CallAfter([this, error_detail]() {
-                        m_is_syncing.store(false);
-                        // Скрываем прогресс-бар
-                        if (m_sync_progress) {
-                            m_sync_progress->Hide();
-                        }
-                        if (m_sync_status_label) {
-                            m_sync_status_label->Hide();
-                        }
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (403). Active syncs: " << m_active_syncs;
-                        if (m_active_syncs <= 0) {
-                            update_sync_button_state(false);
-                            m_active_syncs = 0;
-                        }
-                        m_info_panel->Layout();
-                        // Показываем уведомление в WebView вместо модального окна
-                        show_notification_in_webview(
-                            wxString::Format(_L("Access denied: %s"), wxString::FromUTF8(error_detail.c_str())),
-                            "warning"
-                        );
-                    });
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing 403 response: " << e.what();
-                    CallAfter([this]() {
-                        m_is_syncing.store(false);
-                        // Скрываем прогресс-бар
-                        if (m_sync_progress) {
-                            m_sync_progress->Hide();
-                        }
-                        if (m_sync_status_label) {
-                            m_sync_status_label->Hide();
-                        }
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (403, parse error). Active syncs: " << m_active_syncs;
-                        if (m_active_syncs <= 0) {
-                            update_sync_button_state(false);
-                            m_active_syncs = 0;
-                        }
-                        m_info_panel->Layout();
-                        // Показываем уведомление в WebView вместо модального окна
-                        show_notification_in_webview(
-                            _L("Access denied. Please check your permissions in FilamentHub settings."),
-                            "warning"
-                        );
-                    });
-                }
-                return;
-            }
-            
-            if (http_status != 200) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Failed to get presets list. Status: " << http_status;
-                // ВАЖНО: m_active_syncs не увеличивался до этого момента (увеличивается только после 200 OK)
-                // Поэтому НЕ уменьшаем счетчик здесь
-                CallAfter([this, http_status]() {
-                    m_is_syncing.store(false);
-                    // Скрываем прогресс-бар
-                    if (m_sync_progress) {
-                        m_sync_progress->Hide();
-                    }
-                    if (m_sync_status_label) {
-                        m_sync_status_label->Hide();
-                    }
-                    update_sync_button_state(false);
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (status " << http_status << "). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs < 0) {
-                        m_active_syncs = 0;
-                    }
-                    m_info_panel->Layout();
-                    // Показываем уведомление в WebView вместо модального окна
-                    show_notification_in_webview(
-                        wxString::Format(_L("Failed to get presets list. Status: %d"), http_status),
-                        "error"
-                    );
-                });
-                return;
-            }
-            
-            // ВАЖНО: Увеличиваем счетчик только после успешного получения списка (200 OK)
-            // Это предотвращает проблемы с зависанием кнопки при ошибках (401, 403, etc.)
-            // Счетчик был установлен в synchronize_presets, но там он не увеличивался (исправлено выше)
-            m_active_syncs++;
-            m_sync_retry_attempted.store(false); // Reset retry flag on success
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 9.2] Incremented m_active_syncs for filament presets (after 200 OK). Active syncs: " << m_active_syncs;
-            
-            try {
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 10] Parsing JSON response...";
-                nlohmann::json response = nlohmann::json::parse(json_body);
-                if (!response.contains("items") || !response["items"].is_array()) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 10] Response missing 'items' array";
-                    m_active_syncs--;
-                    return;
-                }
-                std::vector<nlohmann::json> presets = response["items"];
-                int total = response.value("total", 0);
-                
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 11] Received " << total << " presets (items: " << presets.size() << ")";
-                
-                // 4. ВАЖНО: Проверяем, нужно ли делать полную синхронизацию для восстановления удалённых пресетов
-                // Если список пуст И мы не делали полную синхронизацию И есть last_sync_time,
-                // это может означать, что пресеты были удалены локально, но не обновлялись в FilamentHub
-                // В этом случае делаем полную синхронизацию, чтобы восстановить все пресеты
-                // КРИТИЧНО: Защита от зацикливания - проверяем флаг m_full_sync_attempted
-                if (presets.empty() && !force_full_sync && !updated_since.empty() && !m_full_sync_attempted.load()) {
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] API returned empty list, but last_sync_time exists. "
-                                               << "This might indicate locally deleted presets. Performing full sync to restore all presets...";
-                    // Устанавливаем флаг защиты от зацикливания
-                    m_full_sync_attempted.store(true);
-                    // Очищаем last_sync_time и делаем полную синхронизацию
-                    save_last_sync_time(user_id, "", SyncTimestampType::Filament); // Очищаем last_sync_time
-                    // Уменьшаем счетчик (он был увеличен выше после 200 OK)
-                    m_active_syncs--;
-                    // Перезапускаем синхронизацию с force_full_sync=true
-                    CallAfter([this]() {
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Restarting sync with force_full_sync=true to restore deleted presets";
-                        // Сбрасываем флаги перед перезапуском
-                        m_is_syncing.store(false);
-                        // Скрываем прогресс-бар перед перезапуском
-                        if (m_sync_progress) {
-                            m_sync_progress->Hide();
-                        }
-                        if (m_sync_status_label) {
-                            m_sync_status_label->Hide();
-                        }
-                        m_info_panel->Layout();
-                        synchronize_presets(true); // Полная синхронизация (без updated_since)
-                    });
-                    return;
-                } else if (presets.empty() && !force_full_sync && !updated_since.empty() && m_full_sync_attempted.load()) {
-                    // Уже пытались полную синхронизацию - не зацикливаемся
-                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 12] Full sync already attempted, skipping to prevent infinite loop";
-                    // Уменьшаем счетчик
-                    m_active_syncs--;
-                    CallAfter([this]() {
-                        m_is_syncing.store(false);
-                        if (m_sync_progress) {
-                            m_sync_progress->Hide();
-                        }
-                        if (m_sync_status_label) {
-                            m_sync_status_label->Hide();
-                        }
-                        update_sync_button_state(false);
-                        m_info_panel->Layout();
-                        show_notification_in_webview(
-                            _L("No presets to sync. All presets may have sync disabled."),
-                            "info"
-                        );
-                    });
-                    return;
-                }
-                
-                if (presets.empty()) {
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 12] No presets to sync (empty list)";
-                    // Уменьшаем счетчик активных синхронизаций (он был увеличен выше после 200 OK)
-                    CallAfter([this]() {
-                        m_active_syncs--;
-                        m_is_syncing.store(false);
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync completed (empty list). Active syncs: " << m_active_syncs;
-                        // Silent auto-export printer/print profiles (don't re-grab m_is_syncing)
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EMPTY] Scheduling silent auto-export...";
-                        std::string token;
-                        int uid = 0;
-                        if (load_auth_token(token, uid)) {
-                            check_user_permissions(token,
-                                [this, token](bool filament_import, bool printer_import, bool printer_export, bool print_import, bool print_export) {
-                                    if (printer_import) {
-                                        CallAfter([this, token]() {
-                                            try {
-                                                std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                                                m_active_exports.fetch_add(1);
-                                                export_printer_profiles_to_filamenthub_internal(token, api_url);
-                                            } catch (const std::exception& e) {
-                                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent printer export exception: " << e.what();
-                                            }
-                                        });
-                                    }
-                                    if (print_import) {
-                                        CallAfter([this, token]() {
-                                            try {
-                                                std::string api_url = m_api_base_url.empty() ? FilamentHubClient::DEFAULT_API_BASE_URL : m_api_base_url;
-                                                m_active_exports.fetch_add(1);
-                                                export_print_profiles_to_filamenthub_internal(token, api_url);
-                                            } catch (const std::exception& e) {
-                                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [EMPTY] Silent print export exception: " << e.what();
-                                            }
-                                        });
-                                    }
-                                },
-                                [](std::string error, unsigned status) {
-                                    BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Failed to check permissions, skipping printer/print export: " << error;
-                                }
-                            );
-                        }
-                        // Скрываем прогресс-бар
-                        if (m_sync_progress) {
-                            m_sync_progress->Hide();
-                        }
-                        if (m_sync_status_label) {
-                            m_sync_status_label->Hide();
-                        }
-                        if (m_active_syncs <= 0) {
-                            update_sync_button_state(false);
-                            m_active_syncs = 0;
-                        }
-                        m_info_panel->Layout();
-                    });
-                    return;
-                }
-                
-                // 5. Обнаруживаем удалённые пресеты (прежде чем добавлять в очередь)
-                // ВАЖНО: Проверяем маппинги и сравниваем с текущим состоянием PresetBundle
-                // Удалённый пресет = есть маппинг, но пресета нет в PresetBundle
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13] Detecting deleted presets...";
-                
-                std::vector<nlohmann::json> deleted_presets_list;
-                std::set<int> server_preset_ids; // Set ID пресетов, которые пришли с сервера
-                
-                // Создаем set из ID пресетов с сервера
-                for (const auto& preset_json : presets) {
-                    if (!preset_json.contains("id")) continue;
-                    int preset_id = preset_json["id"];
-                    server_preset_ids.insert(preset_id);
-                }
-                
-                // Проверяем каждый пресет с сервера на наличие в маппинге и PresetBundle
-                // Если пресет есть в маппинге, но НЕ существует в PresetBundle, значит он был удален локально
-                for (const auto& preset_json : presets) {
-                    if (!preset_json.contains("id") || !preset_json.contains("name")) continue;
-                    int preset_id = preset_json["id"];
-                    std::string preset_name = preset_json["name"];
-
-                    // Проверяем маппинг
-                    std::string bundle_preset_name = load_preset_mapping(preset_id);
-                    
-                    if (!bundle_preset_name.empty()) {
-                        // Маппинг существует - проверяем, существует ли пресет в PresetBundle
-                        bool preset_exists = preset_exists_in_bundle(bundle_preset_name);
-                        
-                        if (!preset_exists) {
-                            // Маппинг есть, но пресет был удален в OrcaSlicer
-                            // НО: пресет пришел с сервера, значит он НЕ удален на сервере
-                            // Это означает, что пользователь удалил его локально
-                            BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 13.1] Preset " << preset_id 
-                                                       << " (" << preset_name 
-                                                       << ") is mapped to '" << bundle_preset_name 
-                                                       << "' but preset not found in bundle (deleted locally)";
-                            
-                            // Добавляем в список удалённых пресетов
-                            nlohmann::json deleted_preset;
-                            deleted_preset["preset_id"] = preset_id;
-                            deleted_preset["preset_name"] = preset_name;
-                            deleted_preset["bundle_preset_name"] = bundle_preset_name;
-                            deleted_presets_list.push_back(deleted_preset);
-                            
-                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.1.1] Added preset " << preset_id 
-                                                   << " to deleted presets list (was deleted locally, but exists on server)";
-                        }
-                    }
-                }
-                
-                // ВАЖНО: Логируем результат обнаружения удалённых пресетов на уровне error, чтобы гарантировать видимость
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size() 
-                                       << " deleted presets (deleted locally, but exist on server)";
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.2] Found " << deleted_presets_list.size()
-                                       << " deleted presets (deleted locally, but exist on server)";
-
-                // 5.5. Очистка orphaned маппингов (только при полной синхронизации)
-                // При инкрементальной синхронизации сервер возвращает только обновлённые пресеты,
-                // поэтому нельзя определить, какие маппинги устарели.
-                if (force_full_sync) {
-                    std::vector<int> all_mapped_ids = get_all_mapped_preset_ids();
-                    int orphaned_count = 0;
-                    for (int mapped_id : all_mapped_ids) {
-                        if (server_preset_ids.find(mapped_id) == server_preset_ids.end()) {
-                            remove_preset_mapping(mapped_id);
-                            orphaned_count++;
-                        }
-                    }
-                    if (orphaned_count > 0) {
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 13.3] Cleaned up " << orphaned_count
-                                               << " orphaned preset mappings";
-                    }
-                }
-
-                // 6. Batch-download all preset configs + .info in ONE HTTP request
-                // ВАЖНО: Вместо N отдельных download_profile + download_profile_info запросов
-                // используем один POST /orcaslicer/presets/batch-export
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 14] Batch-downloading " << presets.size() << " preset configs...";
-
-                // Collect preset IDs and metadata
-                std::vector<int> preset_ids;
-                std::map<int, std::string> presets_meta; // id → name
-                for (const auto& preset_json : presets) {
-                    if (!preset_json.contains("id")) continue;
-                    int pid = preset_json["id"];
-                    preset_ids.push_back(pid);
-                    presets_meta[pid] = json_string_value_or(preset_json, "name", "");
-                }
-
-                // Initialize counters for process_batch_export_response
-                {
-                    std::lock_guard<std::mutex> lock(m_preset_queue_mutex);
-                    m_total_presets_to_sync = presets.size();
-                    m_synced_count = 0;
-                    m_error_count = 0;
-                    m_sync_detail_lines.clear();
-                }
-
-                int user_id_for_batch = user_id;
-                std::string access_token_for_batch = access_token;
-
-                m_fhub_client->batch_download_profiles(
-                    preset_ids,
-                    access_token,
-                    // on_complete: all profiles downloaded in one response
-                    [this, presets_meta, user_id_for_batch, access_token_for_batch](std::string batch_body, unsigned batch_status) {
-                        if (batch_status != 200) {
-                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Batch download failed. Status: " << batch_status;
-                            CallAfter([this, batch_status]() {
-                                m_active_syncs--;
-                                m_is_syncing.store(false);
-                                if (m_active_syncs <= 0) {
-                                    update_sync_button_state(false);
-                                    m_active_syncs = 0;
-                                }
-                                m_info_panel->Layout();
-                                show_notification_in_webview(
-                                    wxString::Format(_L("Failed to download presets. Status: %d"), batch_status),
-                                    "error"
-                                );
-                            });
-                            return;
-                        }
-                        // Process all profiles locally (no more per-preset HTTP)
-                        try {
-                            process_batch_export_response(batch_body, presets_meta, user_id_for_batch, access_token_for_batch);
-                        } catch (const std::exception& e) {
-                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] process_batch_export_response threw: " << e.what();
-                            CallAfter([this]() {
-                                m_active_syncs--;
-                                m_is_syncing.store(false);
-                                if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
-                                if (m_sync_status_label) m_sync_status_label->Hide();
-                                if (m_active_syncs <= 0) {
-                                    update_sync_button_state(false);
-                                    m_active_syncs = 0;
-                                }
-                                if (m_info_panel) m_info_panel->Layout();
-                                show_notification_in_webview(_L("Failed to process batch preset response."), "error");
-                            });
-                        } catch (...) {
-                            BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] process_batch_export_response threw unknown exception";
-                            CallAfter([this]() {
-                                m_active_syncs--;
-                                m_is_syncing.store(false);
-                                if (m_sync_progress) { m_sync_progress->Hide(); m_sync_progress->SetValue(0); }
-                                if (m_sync_status_label) m_sync_status_label->Hide();
-                                if (m_active_syncs <= 0) {
-                                    update_sync_button_state(false);
-                                    m_active_syncs = 0;
-                                }
-                                if (m_info_panel) m_info_panel->Layout();
-                                show_notification_in_webview(_L("Failed to process batch preset response."), "error");
-                            });
-                        }
-                    },
-                    // on_error: batch download network failure
-                    [this](std::string body, std::string error, unsigned status) {
-                        BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC ERROR] Batch download error: " << error;
-                        CallAfter([this, error]() {
-                            m_active_syncs--;
-                            m_is_syncing.store(false);
-                            if (m_active_syncs <= 0) {
-                                update_sync_button_state(false);
-                                m_active_syncs = 0;
-                            }
-                            m_info_panel->Layout();
-                            show_notification_in_webview(
-                                wxString::Format(_L("Failed to download presets: %s"), wxString::FromUTF8(error.c_str())),
-                                "error"
-                            );
-                        });
-                    }
-                );
-                
-                // 8. Отправляем удалённые пресеты на бэкенд (если есть)
-                // ВАЖНО: Отправляем через CallAfter, чтобы не блокировать callback HTTP клиента
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15.0] Checking deleted_presets_list. Size: " << deleted_presets_list.size();
-                if (!deleted_presets_list.empty()) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15] Found " << deleted_presets_list.size() 
-                                           << " deleted presets. Reporting to backend...";
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] Found " << deleted_presets_list.size() 
-                                           << " deleted presets. Reporting to backend...";
-                    
-                    // Сохраняем данные для отправки в UI потоке
-                    std::string access_token_for_report = access_token;
-                    std::string api_base_url_for_report = api_base_url;
-                    std::vector<nlohmann::json> deleted_presets_for_report = deleted_presets_list;
-                    size_t deleted_presets_count = deleted_presets_list.size();
-                    
-                    // Отправляем на бэкенд через CallAfter, чтобы не блокировать callback
-                    CallAfter([this, access_token_for_report, api_base_url_for_report, deleted_presets_for_report, deleted_presets_count]() {
-                        // Создаём JSON запрос для отправки удалённых пресетов
-                        nlohmann::json deleted_presets_request;
-                        deleted_presets_request["deleted_presets"] = deleted_presets_for_report;
-                        std::string deleted_presets_json = deleted_presets_request.dump();
-                        
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: [SYNC STEP 15.1] Deleted presets JSON: " << deleted_presets_json;
-                        
-                        // Отправляем на бэкенд (это будет выполнено в UI потоке, но report_deleted_presets использует perform_sync)
-                        // Чтобы избежать deadlock, report_deleted_presets тоже должен использовать отдельный поток
-                        // Пока оставляем так, но в будущем нужно переделать report_deleted_presets на асинхронный вызов
-                        FilamentHubClient report_client;
-                        report_client.set_api_base_url(api_base_url_for_report);
-                        
-                        report_client.report_deleted_presets(
-                            access_token_for_report,
-                            deleted_presets_json,
-                            // on_complete: удалённые пресеты успешно отправлены
-                            [this, deleted_presets_count](std::string body, unsigned status) {
-                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2] Deleted presets reported successfully. Status: " << status 
-                                                       << ", Count: " << deleted_presets_count;
-                                if (status == 200) {
-                                    try {
-                                        nlohmann::json response = nlohmann::json::parse(body);
-                                        std::string message = response.value("message", "");
-                                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2.1] Backend response: " << message;
-                                        
-                                        // Если создано уведомление, пользователь увидит его в веб-интерфейсе
-                                        if (response.contains("notification_id")) {
-                                            int notification_id = response.value("notification_id", 0);
-                                            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15.2.2] Notification created with ID: " << notification_id;
-                                        }
-                                    } catch (const std::exception& e) {
-                                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC STEP 15.2.1] Error parsing backend response: " << e.what();
-                                    }
-                                }
-                            },
-                            // on_error: ошибка при отправке удалённых пресетов
-                            [this](std::string body, std::string error, unsigned status) {
-                                BOOST_LOG_TRIVIAL(error) << "FilamentHub: [SYNC STEP 15.2] Failed to report deleted presets. Error: " << error 
-                                                        << ", Status: " << status;
-                                // Не прерываем синхронизацию при ошибке отправки удалённых пресетов
-                                // Пользователь может обработать их вручную через веб-интерфейс
-                            }
-                        );
-                    });
-                } else {
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 15] No deleted presets found";
-                }
-                
-                // 9. КРИТИЧНО: НЕ обновляем last_sync_time здесь!
-                // last_sync_time будет обновлен ПОСЛЕ завершения импорта всех пресетов из очереди
-                // в process_preset_import_queue() после успешного импорта всех пресетов
-                // Это предотвращает потерю пресетов при прерывании синхронизации
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 16] Presets added to queue. last_sync_time will be updated after all presets are imported.";
-                
-                // 10. Завершаем синхронизацию - обновляем UI
-                // ВАЖНО: Синхронизация еще не завершена полностью - пресеты обрабатываются через очередь
-                // Но мы можем обновить UI здесь, чтобы показать, что синхронизация началась
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 17] ========== Synchronization started ==========";
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: [SYNC STEP 17.1] Summary - Presets to import: " << presets.size()
-                                       << ", Deleted presets detected: " << deleted_presets_list.size();
-                
-                // ВАЖНО: НЕ обновляем UI здесь, так как пресеты еще обрабатываются через очередь
-                // UI будет обновлен в process_preset_import_queue() после завершения обработки всех пресетов
-                // Здесь мы только логируем, что синхронизация началась
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Presets added to queue, processing will continue in UI thread";
-                
-            } catch (const std::exception& e) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing presets list: " << e.what();
-                CallAfter([this, e]() {
-                    m_active_syncs--; // Уменьшаем счетчик активных синхронизаций
-                    m_is_syncing.store(false);
-                    // Скрываем прогресс-бар
-                    if (m_sync_progress) {
-                        m_sync_progress->Hide();
-                    }
-                    if (m_sync_status_label) {
-                        m_sync_status_label->Hide();
-                    }
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (parse error). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs <= 0) {
-                        update_sync_button_state(false);
-                        m_active_syncs = 0;
-                    }
-                    m_info_panel->Layout();
-                    // Показываем уведомление в WebView вместо модального окна
-                    show_notification_in_webview(
-                        wxString::Format(_L("Error parsing presets list: %s"), e.what()),
-                        "error"
-                    );
-                });
-            }
+        access_token,
+        updated_since,
+        [this, user_id, force_full_sync, updated_since, api_base_url, access_token](std::string json_body, unsigned http_status) {
+            handle_presets_list_response(std::move(json_body), http_status,
+                user_id, force_full_sync, updated_since, api_base_url, access_token);
         },
-        // on_error: ошибка при получении списка пресетов
         [this](std::string body, std::string error, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: ========== on_error CALLBACK (get_my_presets) ==========";
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to get presets list. Error: '" << error << "'"
-                                    << ", Status: " << http_status << ", Body size: " << body.size() << " bytes";
-            if (body.size() < 500) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body: " << body;
-            } else {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error body (first 500 chars): " << body.substr(0, 500);
-            }
-            
-            wxString error_msg;
-            // ВАЖНО: m_active_syncs НЕ увеличивался до этого момента (увеличивается только после 200 OK в on_complete)
-            // Поэтому НЕ уменьшаем счетчик здесь - он остаётся 0
-            
-            if (http_status == 401) {
-                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: [SYNC ERROR] Token expired (401) in on_error callback, "
-                                           << "waiting for frontend auto-refresh before retry...";
-                // НЕ вызываем logout() — даём фронтенду время на авто-рефреш токена.
-                // Фронтенд (client.ts interceptor) при 401 автоматически использует refresh_token,
-                // получает новый access_token и сохраняет в localStorage.
-                // C++ polling (inject_auth_tokens_to_webview) подхватит новый токен.
-                // Показываем сообщение только если повторная попытка тоже провалится.
-                CallAfter([this]() {
-                    m_is_syncing.store(false);
-                    if (m_sync_progress) {
-                        m_sync_progress->Hide();
-                    }
-                    if (m_sync_status_label) {
-                        m_sync_status_label->Hide();
-                    }
-                    update_sync_button_state(false);
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets sync failed (401). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs < 0) {
-                        m_active_syncs = 0;
-                    }
-                    m_info_panel->Layout();
-                    // Тихо ждём 2 секунды, чтобы фронтенд успел рефрешнуть токен,
-                    // затем пробуем синхронизацию повторно
-                    if (!m_sync_retry_attempted.load()) {
-                        m_sync_retry_attempted.store(true);
-                        BOOST_LOG_TRIVIAL(info) << "FilamentHub: Scheduling silent sync retry in 2 seconds...";
-                        std::thread([this]() {
-                            std::this_thread::sleep_for(std::chrono::seconds(2));
-                            CallAfter([this]() {
-                                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Executing silent sync retry after token refresh wait...";
-                                synchronize_presets(false);
-                            });
-                        }).detach();
-                    } else {
-                        // Повторная попытка уже была — показываем сообщение
-                        m_sync_retry_attempted.store(false);
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Retry also failed (401). Showing session expired message.";
-                        show_notification_in_webview(
-                            _L("Your session has expired. Please login again."),
-                            "warning"
-                        );
-                    }
-                });
-                return;
-            }
-            
-            // Для других ошибок также НЕ уменьшаем счетчик (он не увеличивался)
-            if (http_status == 403) {
-                // Парсим детали ошибки из body
-                try {
-                    nlohmann::json error_json = nlohmann::json::parse(body);
-                    std::string error_detail = error_json.value("detail", "Access denied");
-                    error_msg = wxString::Format(_L("Access denied: %s"), wxString::FromUTF8(error_detail.c_str()));
-                } catch (const std::exception& e) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing 403 response in on_error: " << e.what();
-                    error_msg = _L("Access denied. Please check your permissions in FilamentHub settings.");
-                }
-            } else if (http_status >= 500) {
-                error_msg = _L("Server error. Please try again later.");
-            } else {
-                error_msg = wxString::Format(_L("Failed to sync presets: %s"), wxString::FromUTF8(error.c_str()));
-            }
-            
-            // НЕ уменьшаем счетчик - он не был увеличен для этой синхронизации (увеличивается только после 200 OK)
-            CallAfter([this, error_msg, http_status]() {
-                m_is_syncing.store(false);
-                // Скрываем прогресс-бар
-                if (m_sync_progress) {
-                    m_sync_progress->Hide();
-                }
-                if (m_sync_status_label) {
-                    m_sync_status_label->Hide();
-                }
-                    update_sync_button_state(false);
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Filament presets sync failed (error: " << error_msg.ToUTF8()
-                                        << ", status: " << http_status << "). Active syncs: " << m_active_syncs;
-                    if (m_active_syncs < 0) {
-                        m_active_syncs = 0;
-                    }
-                    m_info_panel->Layout();
-                    // Показываем уведомление в WebView вместо модального окна
-                    show_notification_in_webview(
-                        error_msg,
-                        http_status == 403 ? "warning" : "error"
-                    );
-                });
+            handle_presets_list_error(std::move(body), std::move(error), http_status);
         }
     );
-    BOOST_LOG_TRIVIAL(error) << "FilamentHub: synchronize_presets: client.get_my_presets() CALLED (function returned, waiting for callback)";
+    BOOST_LOG_TRIVIAL(info) << "FilamentHub: get_my_presets() called, waiting for callback";
 }
 
 void FilamentHubPanel::send_response(const wxString& command, const wxString& status, const wxString& message, const wxString& sequence_id)

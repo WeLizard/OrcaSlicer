@@ -349,6 +349,45 @@ private:
     /** Internal: scan orphaned presets and send to server. */
     void scan_orphaned_presets_internal(const std::string& access_token, const std::string& api_base_url);
 
+    // --- Export decomposition helpers ---
+
+    /** Collect user filament presets as JSON array for export. */
+    std::vector<nlohmann::json> collect_filament_presets_for_export();
+
+    /** Collect user printer profiles as JSON array for export. */
+    std::vector<nlohmann::json> collect_printer_profiles_for_export();
+
+    /** Collect user print profiles as JSON array for export. */
+    std::vector<nlohmann::json> collect_print_profiles_for_export();
+
+    /** Process server response from batch export API (shared by all 3 export types).
+     *  \param profile_type_label Display name for logging/notification ("filament presets", "printer profiles", etc.)
+     *  \param mapping_key_prefix Config key prefix for saving fhub_id mappings
+     *  \param profiles_json Original payload (for ext_id→name mapping)
+     *  \param response_body Raw HTTP response
+     *  \param http_status HTTP status code
+     */
+    void process_export_response(
+        const std::string& profile_type_label,
+        const std::string& mapping_key_prefix,
+        const std::vector<nlohmann::json>& profiles_json,
+        const std::string& response_body,
+        unsigned http_status);
+
+    /** Handle HTTP error from batch export API (shared by all 3 export types). */
+    void handle_export_error(
+        const std::string& profile_type_label,
+        const std::string& error,
+        unsigned http_status);
+
+    // --- CallAfter helpers (CODE-2) ---
+
+    /** Thread-safe: show notification in WebView via CallAfter. */
+    void notify_webview(const wxString& message, const wxString& type);
+
+    /** Thread-safe: save AppConfig via CallAfter. */
+    void save_app_config_async();
+
     /**
      * \brief Save access token and user_id to AppConfig
      */

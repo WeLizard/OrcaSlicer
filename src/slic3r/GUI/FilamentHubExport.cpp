@@ -102,6 +102,177 @@ static int parse_fhub_id(const nlohmann::json& val) {
 }
 
 // ============================================================================
+// Shared helpers (CODE-1 decomposition + CODE-2 CallAfter reduction)
+// ============================================================================
+
+void FilamentHubPanel::notify_webview(const wxString& message, const wxString& type)
+{
+    CallAfter([this, message, type]() {
+        show_notification_in_webview(message, type);
+    });
+}
+
+void FilamentHubPanel::save_app_config_async()
+{
+    CallAfter([]() {
+        AppConfig* cfg = wxGetApp().app_config;
+        if (cfg != nullptr)
+            cfg->save();
+    });
+}
+
+void FilamentHubPanel::process_export_response(
+    const std::string& profile_type_label,
+    const std::string& mapping_key_prefix,
+    const std::vector<nlohmann::json>& profiles_json,
+    const std::string& response_body,
+    unsigned http_status)
+{
+    if (http_status != 200) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
+                                 << " when exporting " << profile_type_label;
+        finish_export_operation();
+        notify_webview(
+            wxString::Format(_L("Failed to export %s. HTTP status: %d"),
+                             wxString::FromUTF8(profile_type_label.c_str()), http_status),
+            "error");
+        return;
+    }
+
+    try {
+        nlohmann::json response = nlohmann::json::parse(response_body);
+
+        if (!response.contains("results")) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
+            finish_export_operation();
+            notify_webview(_L("Invalid response from server. Please try again."), "error");
+            return;
+        }
+
+        AppConfig* app_config = wxGetApp().app_config;
+        if (app_config == nullptr) {
+            BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
+            finish_export_operation();
+            notify_webview(_L("Failed to save profile mappings. Please try again."), "error");
+            return;
+        }
+
+        int success_count = 0, error_count = 0, updated_count = 0, created_count = 0;
+
+        // Build ext_id → name lookup
+        std::map<std::string, std::string> ext_id_to_name;
+        for (const auto& p : profiles_json) {
+            std::string eid = p.value("external_id", p.value("setting_id", ""));
+            std::string nm = p.value("name", "");
+            if (!eid.empty() && !nm.empty()) ext_id_to_name[eid] = nm;
+        }
+        std::vector<std::string> detail_lines;
+
+        for (const auto& result : response["results"]) {
+            std::string external_id = result.value("external_id", "");
+            std::string status = result.value("status", "");
+            std::string message = result.value("message", "");
+            std::string name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
+
+            int fhub_id = 0;
+            if (result.contains("fhub_id") && !result["fhub_id"].is_null())
+                fhub_id = parse_fhub_id(result["fhub_id"]);
+
+            if (status == "created") {
+                created_count++; success_count++;
+                detail_lines.push_back(name + " — created");
+            } else if (status == "updated") {
+                updated_count++; success_count++;
+                detail_lines.push_back(name + " — updated");
+            } else if (status == "error" || status == "skipped") {
+                error_count++;
+                detail_lines.push_back(name + " — ERROR: " + message);
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub: " << profile_type_label << " "
+                                           << external_id << " import failed: " << message;
+            }
+
+            if (fhub_id > 0 && !external_id.empty()) {
+                std::string mapping_key = mapping_key_prefix + "_" + external_id;
+                app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Saved mapping external_id=" << external_id
+                                         << " -> fhub_id=" << fhub_id;
+            }
+        }
+
+        save_app_config_async();
+
+        BOOST_LOG_TRIVIAL(info) << "FilamentHub: " << profile_type_label << " export completed. "
+                                << "Created: " << created_count
+                                << ", Updated: " << updated_count
+                                << ", Errors: " << error_count;
+
+        CallAfter([this, profile_type_label, success_count, error_count, created_count, updated_count, detail_lines]() {
+            bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
+            wxString label = wxString::FromUTF8(profile_type_label.c_str());
+            wxString message;
+            if (error_count == 0) {
+                if (created_count > 0 && updated_count > 0) {
+                    message = wxString::Format(_L("Successfully exported %d %s: %d created, %d updated."),
+                                              success_count, label, created_count, updated_count);
+                } else if (created_count > 0) {
+                    message = wxString::Format(_L("Successfully exported %d %s (created)."), created_count, label);
+                } else if (updated_count > 0) {
+                    message = wxString::Format(_L("Successfully exported %d %s (updated)."), updated_count, label);
+                } else {
+                    message = wxString::Format(_L("%s exported successfully."), label);
+                }
+            } else {
+                message = wxString::Format(_L("Exported %d %s: %d successful, %d errors."),
+                                          success_count + error_count, label, success_count, error_count);
+            }
+            if (dev_mode && !detail_lines.empty()) {
+                message += "\n";
+                for (const auto& line : detail_lines)
+                    message += "\n" + wxString::FromUTF8(line.c_str());
+            }
+            show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
+            send_command_to_webview("sync_complete");
+            finish_export_operation();
+            BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] " << profile_type_label
+                                    << " synced=" << success_count << " errors=" << error_count;
+        });
+    } catch (const std::exception& e) {
+        BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what()
+                                 << ", Response: " << response_body.substr(0, 500);
+        finish_export_operation();
+        notify_webview(wxString::Format(_L("Error parsing server response: %s"), e.what()), "error");
+    }
+}
+
+void FilamentHubPanel::handle_export_error(
+    const std::string& profile_type_label,
+    const std::string& error,
+    unsigned http_status)
+{
+    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export " << profile_type_label
+                             << ". Error: " << error << ", Status: " << http_status;
+
+    wxString error_msg;
+    if (http_status == 401) {
+        error_msg = _L("Your session has expired. Please login again.");
+    } else if (http_status == 403) {
+        error_msg = wxString::Format(_L("%s export is disabled in your FilamentHub settings. Please enable it in your profile settings."),
+                                     wxString::FromUTF8(profile_type_label.c_str()));
+    } else if (http_status == 400) {
+        error_msg = _L("Invalid request. Please check your presets and try again.");
+    } else if (http_status >= 500) {
+        error_msg = _L("Server error. Please try again later.");
+    } else {
+        error_msg = wxString::Format(_L("Failed to export %s: %s"),
+                                     wxString::FromUTF8(profile_type_label.c_str()),
+                                     wxString::FromUTF8(error.c_str()));
+    }
+
+    finish_export_operation();
+    notify_webview(error_msg, (http_status == 401 || http_status == 403) ? "warning" : "error");
+}
+
+// ============================================================================
 // Methods for exporting filament presets to FilamentHub
 // ============================================================================
 
@@ -483,199 +654,12 @@ void FilamentHubPanel::export_filament_presets_to_filamenthub_internal(const std
     m_fhub_client->import_filament_presets(
         access_token,
         payload_json,
-        // on_complete: успешно импортировано
         [this, presets_json](std::string response_body, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets import successful. Status: " << http_status;
-            
-            if (http_status != 200) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
-                                        << " when importing filament presets";
-                finish_export_operation();
-                CallAfter([this, http_status]() {
-                    show_notification_in_webview(
-                        wxString::Format(_L("Failed to export filament presets. HTTP status: %d"), http_status),
-                        "error"
-                    );
-                });
-                return;
-            }
-
-            try {
-                // Парсим ответ от сервера
-                nlohmann::json response = nlohmann::json::parse(response_body);
-
-                if (!response.contains("results")) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
-                    finish_export_operation();
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Invalid response from server. Please try again."),
-                            "error"
-                        );
-                    });
-                    return;
-                }
-
-                // Сохраняем маппинги external_id → fhub_id
-                AppConfig* app_config = wxGetApp().app_config;
-                if (app_config == nullptr) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
-                    finish_export_operation();
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Failed to save preset mappings. Please try again."),
-                            "error"
-                        );
-                    });
-                    return;
-                }
-                
-                int success_count = 0;
-                int error_count = 0;
-                int updated_count = 0;
-                int created_count = 0;
-
-                // Строим маппинг external_id → name из исходных данных экспорта
-                std::map<std::string, std::string> ext_id_to_name;
-                for (const auto& p : presets_json) {
-                    std::string eid = p.value("external_id", "");
-                    std::string nm = p.value("name", "");
-                    if (!eid.empty() && !nm.empty()) {
-                        ext_id_to_name[eid] = nm;
-                    }
-                }
-
-                // Детализация для dev mode
-                std::vector<std::string> detail_lines;
-
-                for (const auto& result : response["results"]) {
-                    std::string external_id = result.value("external_id", "");
-                    std::string status = result.value("status", "");
-                    std::string message = result.value("message", "");
-
-                    // Имя пресета из маппинга
-                    std::string preset_name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
-
-                    // Безопасно извлекаем fhub_id (может быть int или string)
-                    int fhub_id = 0;
-                    if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
-                        fhub_id = parse_fhub_id(result["fhub_id"]);
-                    }
-
-                    if (status == "created") {
-                        created_count++;
-                        success_count++;
-                        detail_lines.push_back(preset_name + " — created");
-                    } else if (status == "updated") {
-                        updated_count++;
-                        success_count++;
-                        detail_lines.push_back(preset_name + " — updated");
-                    } else if (status == "error" || status == "skipped") {
-                        error_count++;
-                        detail_lines.push_back(preset_name + " — ERROR: " + message);
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Preset " << external_id
-                                                  << " import failed: " << message;
-                    }
-
-                    // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
-                    if (fhub_id > 0 && !external_id.empty()) {
-                        std::string mapping_key = CONFIG_KEY_PRESET_MAPPING + "_" + external_id;
-                        app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Saved mapping external_id=" << external_id
-                                               << " -> fhub_id=" << fhub_id;
-                    }
-                }
-                
-                CallAfter([app_config]() {
-                    if (app_config != nullptr)
-                        app_config->save();
-                });
-
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Filament presets export completed. "
-                                       << "Created: " << created_count 
-                                       << ", Updated: " << updated_count
-                                       << ", Errors: " << error_count;
-                
-                // Показываем уведомление пользователю
-                CallAfter([this, success_count, error_count, created_count, updated_count, detail_lines]() {
-                    bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
-
-                    wxString message;
-                    if (error_count == 0) {
-                        if (created_count > 0 && updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d filament presets: %d created, %d updated."),
-                                                      success_count, created_count, updated_count);
-                        } else if (created_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d filament presets (created)."), created_count);
-                        } else if (updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d filament presets (updated)."), updated_count);
-                        } else {
-                            message = _L("Filament presets exported successfully.");
-                        }
-                    } else {
-                        message = wxString::Format(_L("Exported %d filament presets: %d successful, %d errors."),
-                                                  success_count + error_count, success_count, error_count);
-                    }
-
-                    // В dev mode добавляем детализацию по каждому пресету
-                    if (dev_mode && !detail_lines.empty()) {
-                        message += "\n";
-                        for (const auto& line : detail_lines) {
-                            message += "\n" + wxString::FromUTF8(line.c_str());
-                        }
-                    }
-
-                    show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
-                    // Оповещаем WebView фронтенд что данные изменились — React обновит кэш
-                    send_command_to_webview("sync_complete");
-
-                    // Сбрасываем флаг после завершения экспорта
-                    finish_export_operation();
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: [EXPORT COMPLETE] Reset m_is_syncing=false, synced=" << success_count << " errors=" << error_count;
-                });
-            } catch (const std::exception& e) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what() 
-                                        << ", Response: " << response_body.substr(0, 500);
-                CallAfter([this, e]() {
-                    show_notification_in_webview(
-                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
-                        "error"
-                    );
-                    // Сбрасываем флаг после ошибки парсинга
-                    finish_export_operation();
-                    BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export parse error";
-                });
-            }
+            process_export_response("filament presets", CONFIG_KEY_PRESET_MAPPING,
+                                    presets_json, response_body, http_status);
         },
-        // on_error: ошибка при импорте
         [this](std::string body, std::string error, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export filament presets. Error: " << error
-                                    << ", Status: " << http_status;
-
-            // КРИТИЧНО: сбрасываем флаг СРАЗУ в error callback, не через CallAfter
-            // Иначе при проблемах с WebView флаг залипнет навсегда
-            finish_export_operation();
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Reset m_is_syncing=false after export error";
-
-            wxString error_msg;
-            if (http_status == 401) {
-                error_msg = _L("Your session has expired. Please login again.");
-            } else if (http_status == 403) {
-                error_msg = _L("Filament presets export is disabled in your FilamentHub settings. Please enable it in your profile settings.");
-            } else if (http_status == 400) {
-                error_msg = _L("Invalid request. Please check your presets and try again.");
-            } else if (http_status >= 500) {
-                error_msg = _L("Server error. Please try again later.");
-            } else {
-                error_msg = wxString::Format(_L("Failed to export filament presets: %s"), wxString::FromUTF8(error.c_str()));
-            }
-
-            CallAfter([this, error_msg, http_status]() {
-                show_notification_in_webview(
-                    error_msg,
-                    http_status == 401 || http_status == 403 ? "warning" : "error"
-                );
-            });
+            handle_export_error("filament presets", error, http_status);
         }
     );
 }
@@ -1183,171 +1167,11 @@ void FilamentHubPanel::export_printer_profiles_to_filamenthub_internal(const std
         access_token,
         payload_json,
         [this, profiles_json](std::string response_body, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles import successful. Status: " << http_status;
-            
-            if (http_status != 200) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
-                                        << " when importing printer profiles";
-                finish_export_operation();
-                CallAfter([this, http_status]() {
-                    show_notification_in_webview(
-                        wxString::Format(_L("Failed to export printer profiles. HTTP status: %d"), http_status),
-                        "error"
-                    );
-                });
-                return;
-            }
-
-            try {
-                nlohmann::json response = nlohmann::json::parse(response_body);
-
-                if (!response.contains("results")) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
-                    finish_export_operation();
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Invalid response from server. Please try again."),
-                            "error"
-                        );
-                    });
-                    return;
-                }
-
-                AppConfig* app_config = wxGetApp().app_config;
-                if (app_config == nullptr) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
-                    finish_export_operation();
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Failed to save profile mappings. Please try again."),
-                            "error"
-                        );
-                    });
-                    return;
-                }
-                
-                int success_count = 0;
-                int error_count = 0;
-                int updated_count = 0;
-                int created_count = 0;
-
-                std::map<std::string, std::string> ext_id_to_name;
-                for (const auto& p : profiles_json) {
-                    std::string eid = p.value("external_id", p.value("setting_id", ""));
-                    std::string nm = p.value("name", "");
-                    if (!eid.empty() && !nm.empty()) ext_id_to_name[eid] = nm;
-                }
-                std::vector<std::string> detail_lines;
-
-                for (const auto& result : response["results"]) {
-                    std::string external_id = result.value("external_id", "");
-                    std::string status = result.value("status", "");
-                    std::string message = result.value("message", "");
-                    std::string profile_name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
-
-                    // Безопасно извлекаем fhub_id (может быть int или string)
-                    int fhub_id = 0;
-                    if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
-                        fhub_id = parse_fhub_id(result["fhub_id"]);
-                    }
-
-                    if (status == "created") {
-                        created_count++;
-                        success_count++;
-                        detail_lines.push_back(profile_name + " — created");
-                    } else if (status == "updated") {
-                        updated_count++;
-                        success_count++;
-                        detail_lines.push_back(profile_name + " — updated");
-                    } else if (status == "error" || status == "skipped") {
-                        error_count++;
-                        detail_lines.push_back(profile_name + " — ERROR: " + message);
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Printer profile " << external_id
-                                                  << " import failed: " << message;
-                    }
-
-                    // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
-                    if (fhub_id > 0 && !external_id.empty()) {
-                        std::string mapping_key = CONFIG_KEY_PRINTER_PROFILE_MAPPING + "_" + external_id;
-                        app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Saved mapping external_id=" << external_id
-                                               << " -> fhub_id=" << fhub_id;
-                    }
-                }
-
-                CallAfter([app_config]() {
-                    if (app_config != nullptr)
-                        app_config->save();
-                });
-
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Printer profiles export completed. "
-                                       << "Created: " << created_count
-                                       << ", Updated: " << updated_count
-                                       << ", Errors: " << error_count;
-
-                CallAfter([this, success_count, error_count, created_count, updated_count, detail_lines]() {
-                    bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
-                    wxString message;
-                    if (error_count == 0) {
-                        if (created_count > 0 && updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d printer profiles: %d created, %d updated."),
-                                                      success_count, created_count, updated_count);
-                        } else if (created_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d printer profiles (created)."), created_count);
-                        } else if (updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d printer profiles (updated)."), updated_count);
-                        } else {
-                            message = _L("Printer profiles exported successfully.");
-                        }
-                    } else {
-                        message = wxString::Format(_L("Exported %d printer profiles: %d successful, %d errors."),
-                                                  success_count + error_count, success_count, error_count);
-                    }
-                    if (dev_mode && !detail_lines.empty()) {
-                        message += "\n";
-                        for (const auto& line : detail_lines) {
-                            message += "\n" + wxString::FromUTF8(line.c_str());
-                        }
-                    }
-                    show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
-                    finish_export_operation();
-                });
-            } catch (const std::exception& e) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what()
-                                        << ", Response: " << response_body.substr(0, 500);
-                finish_export_operation();
-                CallAfter([this, e]() {
-                    show_notification_in_webview(
-                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
-                        "error"
-                    );
-                });
-            }
+            process_export_response("printer profiles", CONFIG_KEY_PRINTER_PROFILE_MAPPING,
+                                    profiles_json, response_body, http_status);
         },
         [this](std::string body, std::string error, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export printer profiles. Error: " << error
-                                    << ", Status: " << http_status;
-
-            wxString error_msg;
-            if (http_status == 401) {
-                error_msg = _L("Your session has expired. Please login again.");
-            } else if (http_status == 403) {
-                error_msg = _L("Printer profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings.");
-            } else if (http_status == 400) {
-                error_msg = _L("Invalid request. Please check your profiles and try again.");
-            } else if (http_status >= 500) {
-                error_msg = _L("Server error. Please try again later.");
-            } else {
-                error_msg = wxString::Format(_L("Failed to export printer profiles: %s"), wxString::FromUTF8(error.c_str()));
-            }
-
-            finish_export_operation();
-            CallAfter([this, error_msg, http_status]() {
-                show_notification_in_webview(
-                    error_msg,
-                    http_status == 401 || http_status == 403 ? "warning" : "error"
-                );
-            });
+            handle_export_error("printer profiles", error, http_status);
         }
     );
 }
@@ -1779,171 +1603,11 @@ void FilamentHubPanel::export_print_profiles_to_filamenthub_internal(const std::
         access_token,
         payload_json,
         [this, profiles_json](std::string response_body, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles import successful. Status: " << http_status;
-            
-            if (http_status != 200) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Unexpected HTTP status " << http_status
-                                        << " when importing print profiles";
-                finish_export_operation();
-                CallAfter([this, http_status]() {
-                    show_notification_in_webview(
-                        wxString::Format(_L("Failed to export print profiles. HTTP status: %d"), http_status),
-                        "error"
-                    );
-                });
-                return;
-            }
-
-            try {
-                nlohmann::json response = nlohmann::json::parse(response_body);
-
-                if (!response.contains("results")) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: Response does not contain 'results' field";
-                    finish_export_operation();
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Invalid response from server. Please try again."),
-                            "error"
-                        );
-                    });
-                    return;
-                }
-
-                AppConfig* app_config = wxGetApp().app_config;
-                if (app_config == nullptr) {
-                    BOOST_LOG_TRIVIAL(error) << "FilamentHub: app_config is null, cannot save mappings";
-                    finish_export_operation();
-                    CallAfter([this]() {
-                        show_notification_in_webview(
-                            _L("Failed to save profile mappings. Please try again."),
-                            "error"
-                        );
-                    });
-                    return;
-                }
-                
-                int success_count = 0;
-                int error_count = 0;
-                int updated_count = 0;
-                int created_count = 0;
-
-                std::map<std::string, std::string> ext_id_to_name;
-                for (const auto& p : profiles_json) {
-                    std::string eid = p.value("external_id", p.value("setting_id", ""));
-                    std::string nm = p.value("name", "");
-                    if (!eid.empty() && !nm.empty()) ext_id_to_name[eid] = nm;
-                }
-                std::vector<std::string> detail_lines;
-
-                for (const auto& result : response["results"]) {
-                    std::string external_id = result.value("external_id", "");
-                    std::string status = result.value("status", "");
-                    std::string message = result.value("message", "");
-                    std::string profile_name = ext_id_to_name.count(external_id) ? ext_id_to_name[external_id] : external_id;
-
-                    // Безопасно извлекаем fhub_id (может быть int или string)
-                    int fhub_id = 0;
-                    if (result.contains("fhub_id") && !result["fhub_id"].is_null()) {
-                        fhub_id = parse_fhub_id(result["fhub_id"]);
-                    }
-
-                    if (status == "created") {
-                        created_count++;
-                        success_count++;
-                        detail_lines.push_back(profile_name + " — created");
-                    } else if (status == "updated") {
-                        updated_count++;
-                        success_count++;
-                        detail_lines.push_back(profile_name + " — updated");
-                    } else if (status == "error" || status == "skipped") {
-                        error_count++;
-                        detail_lines.push_back(profile_name + " — ERROR: " + message);
-                        BOOST_LOG_TRIVIAL(warning) << "FilamentHub: Print profile " << external_id
-                                                  << " import failed: " << message;
-                    }
-
-                    // Сохраняем маппинг external_id → fhub_id (для обратной синхронизации)
-                    if (fhub_id > 0 && !external_id.empty()) {
-                        std::string mapping_key = CONFIG_KEY_PRINT_PROFILE_MAPPING + "_" + external_id;
-                        app_config->set(CONFIG_SECTION_FILAMENTHUB, mapping_key, std::to_string(fhub_id));
-                        BOOST_LOG_TRIVIAL(debug) << "FilamentHub: Saved mapping external_id=" << external_id
-                                              << " -> fhub_id=" << fhub_id;
-                    }
-                }
-
-                CallAfter([app_config]() {
-                    if (app_config != nullptr)
-                        app_config->save();
-                });
-
-                BOOST_LOG_TRIVIAL(info) << "FilamentHub: Print profiles export completed. "
-                                      << "Created: " << created_count
-                                      << ", Updated: " << updated_count
-                                      << ", Errors: " << error_count;
-
-                CallAfter([this, success_count, error_count, created_count, updated_count, detail_lines]() {
-                    bool dev_mode = wxGetApp().app_config && wxGetApp().app_config->get("developer_mode") == "true";
-                    wxString message;
-                    if (error_count == 0) {
-                        if (created_count > 0 && updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d print profiles: %d created, %d updated."),
-                                                      success_count, created_count, updated_count);
-                        } else if (created_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d print profiles (created)."), created_count);
-                        } else if (updated_count > 0) {
-                            message = wxString::Format(_L("Successfully exported %d print profiles (updated)."), updated_count);
-                        } else {
-                            message = _L("Print profiles exported successfully.");
-                        }
-                    } else {
-                        message = wxString::Format(_L("Exported %d print profiles: %d successful, %d errors."),
-                                                  success_count + error_count, success_count, error_count);
-                    }
-                    if (dev_mode && !detail_lines.empty()) {
-                        message += "\n";
-                        for (const auto& line : detail_lines) {
-                            message += "\n" + wxString::FromUTF8(line.c_str());
-                        }
-                    }
-                    show_notification_in_webview(message, error_count > 0 ? "warning" : "success");
-                    finish_export_operation();
-                });
-            } catch (const std::exception& e) {
-                BOOST_LOG_TRIVIAL(error) << "FilamentHub: Error parsing import response: " << e.what()
-                                        << ", Response: " << response_body.substr(0, 500);
-                finish_export_operation();
-                CallAfter([this, e]() {
-                    show_notification_in_webview(
-                        wxString::Format(_L("Error parsing server response: %s"), e.what()),
-                        "error"
-                    );
-                });
-            }
+            process_export_response("print profiles", CONFIG_KEY_PRINT_PROFILE_MAPPING,
+                                    profiles_json, response_body, http_status);
         },
         [this](std::string body, std::string error, unsigned http_status) {
-            BOOST_LOG_TRIVIAL(error) << "FilamentHub: Failed to export print profiles. Error: " << error
-                                    << ", Status: " << http_status;
-
-            wxString error_msg;
-            if (http_status == 401) {
-                error_msg = _L("Your session has expired. Please login again.");
-            } else if (http_status == 403) {
-                error_msg = _L("Print profiles export is disabled in your FilamentHub settings. Please enable it in your profile settings.");
-            } else if (http_status == 400) {
-                error_msg = _L("Invalid request. Please check your profiles and try again.");
-            } else if (http_status >= 500) {
-                error_msg = _L("Server error. Please try again later.");
-            } else {
-                error_msg = wxString::Format(_L("Failed to export print profiles: %s"), wxString::FromUTF8(error.c_str()));
-            }
-
-            finish_export_operation();
-            CallAfter([this, error_msg, http_status]() {
-                show_notification_in_webview(
-                    error_msg,
-                    http_status == 401 || http_status == 403 ? "warning" : "error"
-                );
-            });
+            handle_export_error("print profiles", error, http_status);
         }
     );
 }

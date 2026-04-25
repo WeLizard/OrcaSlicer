@@ -1,6 +1,7 @@
 #include "MoonrakerPrinterAgent.hpp"
 #include "FilamentHubClient.hpp"
 #include "Http.hpp"
+#include "InstanceID.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -15,6 +16,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
 #include <algorithm>
@@ -1004,6 +1006,55 @@ bool MoonrakerPrinterAgent::fetch_hh_filament_info(std::vector<AmsTrayData>& tra
     if (trays.empty()) {
         BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent::fetch_hh_filament_info: No valid HH gates found";
         return false;
+    }
+
+    // Upload HH snapshot to FilamentHub so the web catalog can show live printer state.
+    // Best-effort, async — never block local sync flow if backend is unreachable.
+    if (GUI::wxGetApp().app_config) {
+        std::string fh_token = GUI::wxGetApp().app_config->get("filamenthub", "access_token");
+        if (!fh_token.empty()) {
+            std::string fingerprint = "orca:" + Slic3r::instance_id::ensure(*GUI::wxGetApp().app_config)
+                                    + ":" + device_info.dev_id;
+
+            auto now = boost::posix_time::microsec_clock::universal_time();
+            std::string snapshot_ts = boost::posix_time::to_iso_extended_string(now) + "Z";
+
+            nlohmann::json gates_json = nlohmann::json::array();
+            for (int gate_idx = 0; gate_idx < num_gates; ++gate_idx) {
+                int status = safe_array_int(gate_status, gate_idx);
+                std::string material = safe_array_string(gate_material, gate_idx);
+                std::string color = safe_array_string(gate_color, gate_idx);
+                int temperature = safe_array_int(gate_temperature, gate_idx);
+
+                std::string color_hex = color;
+                if (!color_hex.empty() && color_hex[0] == '#')
+                    color_hex.erase(0, 1);
+                if (color_hex.size() > 7)
+                    color_hex.resize(7);
+
+                if (material.size() > 50)
+                    material.resize(50);
+
+                nlohmann::json gate_obj = {
+                    {"gate", gate_idx},
+                    {"status", status},
+                    {"material", material},
+                    {"color_hex", color_hex},
+                    {"temperature", std::max(0, temperature)},
+                };
+                gates_json.push_back(gate_obj);
+            }
+
+            nlohmann::json payload = {
+                {"device_fingerprint", fingerprint},
+                {"gate_count", num_gates},
+                {"snapshot_ts", snapshot_ts},
+                {"gates", gates_json},
+            };
+
+            FilamentHubClient client;
+            client.post_hh_snapshot_sync(fh_token, payload.dump());
+        }
     }
 
     return true;

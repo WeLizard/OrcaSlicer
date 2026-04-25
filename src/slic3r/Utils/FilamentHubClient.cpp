@@ -726,6 +726,40 @@ void FilamentHubClient::get_presets_stats(
         on_complete, on_error);
 }
 
+bool FilamentHubClient::post_hh_snapshot_sync(
+    const std::string& access_token,
+    const std::string& payload_json)
+{
+    if (access_token.empty() || payload_json.empty())
+        return false;
+
+    std::string url = get_api_base_url() + API_HH_SNAPSHOT;
+    bool ok = false;
+
+    Http::post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("Authorization", "Bearer " + access_token)
+        .set_post_body(payload_json)
+        .timeout_connect(TIMEOUT_CONNECT_DEFAULT)
+        .timeout_max(TIMEOUT_MAX_DEFAULT)
+        .on_complete([&](std::string /*body*/, unsigned status) {
+            if (status == 200) {
+                ok = true;
+                BOOST_LOG_TRIVIAL(debug) << "FilamentHub::post_hh_snapshot_sync: uploaded, status=200";
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "FilamentHub::post_hh_snapshot_sync: status=" << status;
+            }
+        })
+        .on_error([&](std::string /*body*/, std::string err, unsigned status) {
+            BOOST_LOG_TRIVIAL(warning) << "FilamentHub::post_hh_snapshot_sync: error=" << err
+                                       << " (status=" << status << ")";
+        })
+        .perform_sync();
+
+    return ok;
+}
+
 std::map<int, int> FilamentHubClient::resolve_spool_presets_sync(
     const std::string& access_token,
     const std::string& spool_ids)

@@ -91,6 +91,7 @@ public:
     static constexpr const char* API_DELETED_PRESETS            = "/api/v1/orcaslicer/deleted-presets";
     static constexpr const char* API_NOTIFICATIONS_UNREAD_COUNT = "/api/v1/notifications/unread-count";
     static constexpr const char* API_SPOOL_PRESET_MAPPING       = "/api/v1/orcaslicer/spool-preset-mapping";
+    static constexpr const char* API_HH_SNAPSHOT                = "/api/v1/orcaslicer/preset-slot-sync/hh/snapshot";
 
     // Timeout constants (seconds)
     static constexpr int TIMEOUT_CONNECT_DEFAULT = 10;
@@ -454,6 +455,26 @@ public:
         const std::string& access_token,
         std::function<void(std::string /* response_body */, unsigned /* http_status */)> on_complete,
         std::function<void(std::string /* body */, std::string /* error */, unsigned /* http_status */)> on_error
+    );
+
+    /**
+     * \brief Upload Happy Hare snapshot to FilamentHub (synchronous)
+     *
+     * Sends the current Happy Hare gate state (per-gate material, color, status,
+     * temperature) to the backend so the web catalog can show the live state
+     * of the user's printer. Called after fetch_hh_filament_info() in
+     * MoonrakerPrinterAgent on each printer poll. Must be called from a
+     * background thread (uses perform_sync). Best-effort: returns false on
+     * any failure, never throws — local sync flow continues regardless.
+     *
+     * \param access_token JWT access token
+     * \param payload_json JSON body matching backend HHSnapshotRequest:
+     *        {device_fingerprint, gate_count, snapshot_ts, gates:[{gate, status, material, color_hex, temperature}]}
+     * \return true on HTTP 200, false otherwise
+     */
+    bool post_hh_snapshot_sync(
+        const std::string& access_token,
+        const std::string& payload_json
     );
 
 private:

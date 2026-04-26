@@ -183,6 +183,8 @@ set(lisbslic3r_sources
     Format/3mf.hpp
     Format/AMF.cpp
     Format/AMF.hpp
+    Format/DRC.cpp
+    Format/DRC.hpp
     Format/bbs_3mf.cpp
     Format/bbs_3mf.hpp
     format.hpp
@@ -447,6 +449,8 @@ set(lisbslic3r_sources
     Timer.hpp
     TriangleMesh.cpp
     TriangleMesh.hpp
+    TriangleMeshDeal.cpp
+    TriangleMeshDeal.hpp
     TriangleMeshSlicer.cpp
     TriangleMeshSlicer.hpp
     TriangleSelector.cpp
@@ -492,7 +496,116 @@ set(CGAL_DO_NOT_WARN_ABOUT_CMAKE_BUILD_TYPE ON CACHE BOOL "" FORCE)
 cmake_policy(PUSH)
 cmake_policy(SET CMP0011 NEW)
 find_package(CGAL REQUIRED)
-find_package(OpenCV REQUIRED core)
+
+# =============================================================================
+# MODIFICATIONS BY FILAMENTHUB (2025)
+# 
+# This section was modified to fix OpenCV detection issues on Windows builds.
+# Original copyright (C) SoftFever/OrcaSlicer.
+# 
+# Modifications:
+# - Added explicit OpenCV_RUNTIME and OpenCV_ARCH detection
+# - Added manual OpenCV_DIR path resolution
+# - Added fallback to direct library search if find_package fails
+#
+# Licensed under AGPL-3.0 (same as original OrcaSlicer)
+# Source: https://github.com/WeLizard/OrcaSlicer
+# Branch: filamenthub-integration
+# =============================================================================
+
+# Исправление для OpenCV: явно устанавливаем RUNTIME и ARCH, так как MSVC_VERSION может не определяться в OpenCVConfig.cmake
+if(NOT DEFINED OpenCV_RUNTIME)
+    if(MSVC_VERSION MATCHES "^193[0-9]$")
+        set(OpenCV_RUNTIME vc17)
+    elseif(MSVC_VERSION MATCHES "^192[0-9]$")
+        set(OpenCV_RUNTIME vc16)
+    elseif(MSVC_VERSION MATCHES "^191[0-9]$")
+        set(OpenCV_RUNTIME vc15)
+    elseif(MSVC_VERSION EQUAL 1900)
+        set(OpenCV_RUNTIME vc14)
+    endif()
+endif()
+if(NOT DEFINED OpenCV_ARCH)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|x86_64.*|AMD64.*")
+        set(OpenCV_ARCH x64)
+    else()
+        set(OpenCV_ARCH x86)
+    endif()
+endif()
+
+# Устанавливаем OpenCV_DIR явно, если он не задан пользователем
+# Проверяем возможные пути к собранному OpenCV
+if(NOT DEFINED OpenCV_DIR)
+    # Путь после сборки депенденси через OrcaSlicer
+    set(_opencv_possible_paths
+        "${CMAKE_SOURCE_DIR}/deps/build/OrcaSlicer_dep/usr/local/staticlib"
+        "${CMAKE_SOURCE_DIR}/deps/OrcaSlicer_dep/usr/local/staticlib"
+        "${CMAKE_SOURCE_DIR}/deps/build/OrcaSlicer_dep/usr/local"
+        "${CMAKE_PREFIX_PATH}/OrcaSlicer_dep/usr/local/staticlib"
+    )
+    foreach(_path IN LISTS _opencv_possible_paths)
+        if(EXISTS "${_path}/OpenCVConfig.cmake")
+            set(OpenCV_DIR "${_path}" CACHE PATH "Path to OpenCV config" FORCE)
+            message(STATUS "Found OpenCV_DIR: ${OpenCV_DIR}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+# Пробуем найти OpenCV через find_package
+find_package(OpenCV QUIET)
+
+# Если не нашли, используем прямое подключение библиотеки
+if(NOT OpenCV_FOUND)
+    message(STATUS "OpenCV not found via find_package, trying direct library search...")
+    # Проверяем несколько возможных путей к OpenCV
+    set(_opencv_search_paths
+        "${CMAKE_SOURCE_DIR}/deps/build/OrcaSlicer_dep/usr/local"
+        "${CMAKE_SOURCE_DIR}/deps/OrcaSlicer_dep/usr/local"
+        "${CMAKE_PREFIX_PATH}/OrcaSlicer_dep/usr/local"
+        "${CMAKE_PREFIX_PATH}"
+    )
+    
+    foreach(_root IN LISTS _opencv_search_paths)
+        find_path(OpenCV_INCLUDE_DIRS
+            NAMES opencv2/opencv.hpp
+            PATHS 
+                ${_root}/include
+                ${_root}/usr/local/include
+            NO_DEFAULT_PATH
+        )
+        if(OpenCV_INCLUDE_DIRS)
+            find_library(OpenCV_WORLD_LIB
+                NAMES opencv_world460 opencv_world opencv_world460d
+                PATHS 
+                    ${_root}/x64/${OpenCV_RUNTIME}/staticlib
+                    ${_root}/staticlib
+                    ${_root}/usr/local/staticlib
+                    ${_root}/usr/local/lib
+                    ${_root}/lib
+                    ${_root}/x64/vc17/staticlib
+                NO_DEFAULT_PATH
+            )
+            if(OpenCV_WORLD_LIB)
+                break()
+            endif()
+        endif()
+    endforeach()
+    
+    if(OpenCV_INCLUDE_DIRS AND OpenCV_WORLD_LIB)
+        message(STATUS "Found OpenCV manually: ${OpenCV_WORLD_LIB}")
+        set(OpenCV_FOUND TRUE)
+        set(OpenCV_VERSION "4.6.0")
+        # Создаем импортированный target
+        add_library(opencv_world STATIC IMPORTED)
+        set_target_properties(opencv_world PROPERTIES
+            IMPORTED_LOCATION "${OpenCV_WORLD_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${OpenCV_INCLUDE_DIRS}"
+        )
+    else()
+        message(FATAL_ERROR "OpenCV not found! Include: ${OpenCV_INCLUDE_DIRS}, Library: ${OpenCV_WORLD_LIB}")
+    endif()
+endif()
 cmake_policy(POP)
 
 add_library(libslic3r_cgal STATIC 
@@ -538,6 +651,7 @@ find_package(OpenCASCADE REQUIRED)
 target_include_directories(libslic3r SYSTEM PUBLIC ${OpenCASCADE_INCLUDE_DIR})
 
 find_package(JPEG REQUIRED)
+find_package(draco REQUIRED)
 
 set(OCCT_LIBS
     TKXDESTEP
@@ -583,6 +697,7 @@ target_link_libraries(libslic3r
         cereal::cereal
         clipper
         Clipper2
+        draco::draco
         eigen
         glu-libtess
         JPEG::JPEG

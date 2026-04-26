@@ -89,10 +89,9 @@ else ()
 endif ()
 
 find_package(Git)
-if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
-    if(DEFINED ENV{git_commit_hash} AND NOT "$ENV{git_commit_hash}" STREQUAL "")
-        message(STATUS "Specified git commit hash: $ENV{git_commit_hash}")
-
+if(DEFINED ENV{git_commit_hash} AND NOT "$ENV{git_commit_hash}" STREQUAL "")
+    message(STATUS "Specified git commit hash: $ENV{git_commit_hash}")
+    if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
         # Convert the given hash to short hash
         execute_process(
             COMMAND ${GIT_EXECUTABLE} rev-parse --short "$ENV{git_commit_hash}"
@@ -100,17 +99,20 @@ if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
             OUTPUT_VARIABLE GIT_COMMIT_HASH
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
-        add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
     else()
-        # Check current Git commit hash
-        execute_process(
-            COMMAND ${GIT_EXECUTABLE} log -1 --format=%h
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            OUTPUT_VARIABLE GIT_COMMIT_HASH
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
+        # No .git directory (e.g., Flatpak sandbox) — truncate directly
+        string(SUBSTRING "$ENV{git_commit_hash}" 0 7 GIT_COMMIT_HASH)
     endif()
+    add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
+elseif(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    # Check current Git commit hash
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} log -1 --format=%h
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_COMMIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
 endif()
 
 if(DEFINED ENV{SLIC3R_STATIC})
@@ -160,7 +162,7 @@ if (APPLE)
     if (CMAKE_MACOSX_BUNDLE)
         set(CMAKE_INSTALL_RPATH @executable_path/../Frameworks)
     endif()
-    SET(CMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.softfever3d.orca-slicer")
+    SET(CMAKE_XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.orcaslicer.OrcaSlicer")
 
     message(STATUS "Orca: IS_CROSS_COMPILE: ${IS_CROSS_COMPILE}")
 endif ()
@@ -171,10 +173,7 @@ option(BUILD_TESTS       "Build unit tests" OFF)
 option(ORCA_TOOLS       "Build Orca tools" OFF)
 
 if (FLATPAK)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++20")
-    set(SLIC3R_PCH OFF CACHE BOOL "" FORCE)
     set(SLIC3R_FHS ON CACHE BOOL "" FORCE)
-    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(SLIC3R_DESKTOP_INTEGRATION OFF CACHE BOOL "" FORCE)
 endif ()
 
@@ -284,6 +283,44 @@ else ()
     message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH} (from cache or command line)")
 endif ()
 set(PREFIX_PATH_CHECK ${CMAKE_PREFIX_PATH})
+
+# =============================================================================
+# MODIFICATIONS BY FILAMENTHUB (2025)
+# 
+# This section was modified to fix OpenCV detection issues on Windows builds.
+# Original copyright (C) SoftFever/OrcaSlicer.
+# 
+# Modifications:
+# - Added explicit OpenCV_RUNTIME and OpenCV_ARCH detection for Windows/MSVC
+# - Fixed OCCT DLL path resolution for multiple VC runtime versions
+#
+# Licensed under AGPL-3.0 (same as original OrcaSlicer)
+# Source: https://github.com/WeLizard/OrcaSlicer
+# Branch: filamenthub-integration
+# =============================================================================
+
+# Исправление для OpenCV: явно устанавливаем RUNTIME и ARCH для Windows
+# OpenCVConfig.cmake может не правильно определить MSVC_VERSION
+if(WIN32 AND MSVC)
+    if(NOT DEFINED OpenCV_RUNTIME)
+        if(MSVC_VERSION MATCHES "^193[0-9]$")
+            set(OpenCV_RUNTIME vc17 CACHE STRING "OpenCV runtime version" FORCE)
+        elseif(MSVC_VERSION MATCHES "^192[0-9]$")
+            set(OpenCV_RUNTIME vc16 CACHE STRING "OpenCV runtime version" FORCE)
+        elseif(MSVC_VERSION MATCHES "^191[0-9]$")
+            set(OpenCV_RUNTIME vc15 CACHE STRING "OpenCV runtime version" FORCE)
+        elseif(MSVC_VERSION EQUAL 1900)
+            set(OpenCV_RUNTIME vc14 CACHE STRING "OpenCV runtime version" FORCE)
+        endif()
+    endif()
+    if(NOT DEFINED OpenCV_ARCH)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|x86_64.*|AMD64.*" OR CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
+            set(OpenCV_ARCH x64 CACHE STRING "OpenCV architecture" FORCE)
+        else()
+            set(OpenCV_ARCH x86 CACHE STRING "OpenCV architecture" FORCE)
+        endif()
+    endif()
+endif()
 
 # the CMAKE_PREFIX_PATH environment variable is separate from the CMAKE_PREFIX_PATH cache variable and provides additional paths to search for libraries.
 if (NOT "$ENV{CMAKE_PREFIX_PATH}" STREQUAL "")
@@ -436,7 +473,11 @@ if (NOT MSVC AND ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_CXX_COMP
     endif()
 
     if((${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang" OR ${CMAKE_CXX_COMPILER_ID} STREQUAL "AppleClang") AND ${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER 15)
-        add_compile_options(-Wno-error=enum-constexpr-conversion)
+        include(CheckCXXCompilerFlag)
+        check_cxx_compiler_flag(-Wno-error=enum-constexpr-conversion HAS_WNO_ERROR_ENUM_CONSTEXPR_CONV)
+        if(HAS_WNO_ERROR_ENUM_CONSTEXPR_CONV)
+            add_compile_options(-Wno-error=enum-constexpr-conversion)
+        endif()
     endif()
 
     #GCC generates loads of -Wunknown-pragmas when compiling igl. The fix is not easy due to a bug in gcc, see
@@ -451,9 +492,12 @@ if (NOT MSVC AND ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_CXX_COMP
         add_compile_options(-Wno-unknown-pragmas)
     endif()
 
-    # Bit of a hack for flatpak building: compress the debug info with zstd to save space in CI
-    if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 13.0)
-        add_compile_options(-gz=zstd)
+    # Compress the debug info with zstd to save space in Flatpak CI builds
+    if(FLATPAK)
+        if(("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 13.0) OR
+           ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0))
+            add_compile_options(-gz=zstd)
+        endif()
     endif()
 
     if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 14)
@@ -487,7 +531,8 @@ if (APPLE)
 endif ()
 
 if(MSVC)
-# 添加编译选项，忽略警告 C4305 （格式转换截断）
+# Ignore truncating casts in initializers & constructors
+# https://learn.microsoft.com/en-us/cpp/error-messages/compiler-warnings/compiler-warning-level-1-c4305
 add_compile_options(/wd4305)
 endif()
 
@@ -820,34 +865,64 @@ function(orcaslicer_copy_dlls target config postfix output_dlls)
             ${TOP_LEVEL_PROJECT_DIR}/deps/WebView2/lib/win-${_arch}/WebView2Loader.dll
         DESTINATION ${_out_dir})
 
-    file(COPY ${CMAKE_PREFIX_PATH}/bin/occt/TKBO.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKBRep.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKCDF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKernel.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKG2d.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKG3d.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKGeomAlgo.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKGeomBase.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKHLR.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKLCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKMath.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKMesh.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKPrim.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKService.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKShHealing.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEP.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEP209.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEPAttr.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKSTEPBase.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKTopAlgo.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKV3d.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKVCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKXCAF.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKXDESTEP.dll
-            ${CMAKE_PREFIX_PATH}/bin/occt/TKXSBase.dll
-            ${CMAKE_PREFIX_PATH}/bin/freetype.dll
-         DESTINATION ${_out_dir})
+    # Определяем путь к DLL файлам OCCT (они могут быть в bin/occt/, win64/vc14/bin/, win64/vc17/bin/)
+    set(_occt_dll_path "")
+    
+    # Список возможных путей (в порядке приоритета)
+    set(_occt_candidate_paths
+        "${CMAKE_PREFIX_PATH}/bin/occt"
+        "${CMAKE_PREFIX_PATH}/win64/vc17/bin"
+        "${CMAKE_PREFIX_PATH}/win64/vc16/bin"
+        "${CMAKE_PREFIX_PATH}/win64/vc15/bin"
+        "${CMAKE_PREFIX_PATH}/win64/vc14/bin"
+    )
+    
+    # Находим первый существующий путь
+    foreach(_path IN LISTS _occt_candidate_paths)
+        if(EXISTS "${_path}/TKBO.dll")
+            set(_occt_dll_path "${_path}")
+            message(STATUS "Found OCCT DLLs at: ${_occt_dll_path}")
+            break()
+        endif()
+    endforeach()
+    
+    # Копируем DLL файлы OCCT только если они существуют
+    if(_occt_dll_path AND EXISTS "${_occt_dll_path}/TKBO.dll")
+        file(COPY ${_occt_dll_path}/TKBO.dll
+                ${_occt_dll_path}/TKBRep.dll
+                ${_occt_dll_path}/TKCAF.dll
+                ${_occt_dll_path}/TKCDF.dll
+                ${_occt_dll_path}/TKernel.dll
+                ${_occt_dll_path}/TKG2d.dll
+                ${_occt_dll_path}/TKG3d.dll
+                ${_occt_dll_path}/TKGeomAlgo.dll
+                ${_occt_dll_path}/TKGeomBase.dll
+                ${_occt_dll_path}/TKHLR.dll
+                ${_occt_dll_path}/TKLCAF.dll
+                ${_occt_dll_path}/TKMath.dll
+                ${_occt_dll_path}/TKMesh.dll
+                ${_occt_dll_path}/TKPrim.dll
+                ${_occt_dll_path}/TKService.dll
+                ${_occt_dll_path}/TKShHealing.dll
+                ${_occt_dll_path}/TKSTEP.dll
+                ${_occt_dll_path}/TKSTEP209.dll
+                ${_occt_dll_path}/TKSTEPAttr.dll
+                ${_occt_dll_path}/TKSTEPBase.dll
+                ${_occt_dll_path}/TKTopAlgo.dll
+                ${_occt_dll_path}/TKV3d.dll
+                ${_occt_dll_path}/TKVCAF.dll
+                ${_occt_dll_path}/TKXCAF.dll
+                ${_occt_dll_path}/TKXDESTEP.dll
+                ${_occt_dll_path}/TKXSBase.dll
+             DESTINATION ${_out_dir})
+    else()
+        message(WARNING "OCCT DLL files not found in ${_occt_dll_path}, skipping OCCT DLL copy")
+    endif()
+    
+    # Копируем freetype.dll если он существует
+    if(EXISTS "${CMAKE_PREFIX_PATH}/bin/freetype.dll")
+        file(COPY ${CMAKE_PREFIX_PATH}/bin/freetype.dll DESTINATION ${_out_dir})
+    endif()
 
     set(${output_dlls}
         ${_out_dir}/libgmp-10.dll

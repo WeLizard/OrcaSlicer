@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <functional>
 #include <mutex>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem/path.hpp>
 #include <boost/property_tree/ptree_fwd.hpp>
 
@@ -52,7 +53,9 @@
 #define BBL_JSON_KEY_BASE_ID        "base_id"
 #define BBL_JSON_KEY_USER_ID        "user_id"
 #define BBL_JSON_KEY_FILAMENT_ID    "filament_id"
-#define BBL_JSON_KEY_UPDATE_TIME    "updated_time"
+#define UNKNOWN_FILAMENT_ID         "__unknown__"
+#define ORCA_JSON_KEY_UPDATE_TIME    "updated_time"
+#define ORCA_JSON_KEY_CREATED_TIME    "created_time"
 #define BBL_JSON_KEY_INHERITS       "inherits"
 #define BBL_JSON_KEY_INSTANTIATION  "instantiation"
 #define BBL_JSON_KEY_NOZZLE_DIAMETER            "nozzle_diameter"
@@ -74,6 +77,8 @@
 // Orca extension
 #define ORCA_JSON_KEY_RENAMED_FROM              "renamed_from"
 
+
+static constexpr const char* GENERIC_PREFIX = "Generic ";
 
 namespace Slic3r {
 
@@ -222,9 +227,15 @@ public:
 
     //BBS: add type for project-embedded
     bool                is_project_embedded = false;
+    // FilamentHub: preset synced from FilamentHub cloud
+    bool                is_filamenthub = false;
+    std::string         fhub_source;
+    int                 fhub_id = 0;
     ConfigSubstitutions *loading_substitutions{nullptr};
-    bool                is_user() const { return ! this->is_default && ! this->is_system && ! this->is_project_embedded; }
-    //bool                is_user() const { return ! this->is_default && ! this->is_system; }
+    // User preset = not default, not system, not project-embedded, not filamenthub
+    bool                is_user() const { return !this->is_default && !this->is_system && !this->is_project_embedded && !this->is_filamenthub; }
+    // FilamentHub preset (synced from cloud)
+    bool                is_filamenthub_preset() const { return this->is_filamenthub; }
 
     // Name of the preset, usually derived form the file name.
     std::string         name;
@@ -632,7 +643,18 @@ public:
     {
         return const_cast<PresetCollection*>(this)->find_preset2(name, auto_match);
     }
+    // Resolve a parent preset by its stable cloud/system identifier when the legacy inherits name is stale.
+    Preset* find_preset_by_setting_id(const std::string& setting_id, bool require_base_preset = true);
+    const Preset* find_preset_by_setting_id(const std::string& setting_id, bool require_base_preset = true) const
+    {
+        return const_cast<PresetCollection*>(this)->find_preset_by_setting_id(setting_id, require_base_preset);
+    }
     size_t first_visible_idx() const;
+    // Return the index of the first visible, compatible, system base preset
+    // matching the given filament_type.  Falls back to base type, then any visible.
+    size_t first_visible_idx_by_type(const std::string& filament_type) const;
+    // Return the filament_id of the best-matching visible preset for the given filament type.
+    std::string filament_id_by_type(const std::string& filament_type) const;
     // Return index of the first compatible preset. Certainly at least the '- default -' preset shall be compatible.
     // If one of the prefered_alternates is compatible, select it.
     template<typename PreferedCondition> size_t first_compatible_idx(PreferedCondition prefered_condition) const
@@ -764,13 +786,39 @@ protected:
     void            set_custom_preset_alias(Preset &preset);
 
 private:
+    // Comparator that sorts "Generic " prefixed presets before others, then alphabetically within each group.
+    static bool filament_preset_less(const Preset &a, const Preset &b) {
+        bool a_generic = boost::starts_with(a.name, GENERIC_PREFIX);
+        bool b_generic = boost::starts_with(b.name, GENERIC_PREFIX);
+        if (a_generic != b_generic)
+            return a_generic; // generics first
+        return a.name < b.name;
+    }
+
+    // Sort presets: filament presets use generic-first ordering, others sort alphabetically.
+    void sort_presets() {
+        if (m_type == Preset::TYPE_FILAMENT)
+            std::sort(m_presets.begin() + m_num_default_presets, m_presets.end(), filament_preset_less);
+        else
+            std::sort(m_presets.begin() + m_num_default_presets, m_presets.end());
+    }
+
     // Find a preset position in the sorted list of presets.
     // The "-- default -- " preset is always the first, so it needs
     // to be handled differently.
     // If a preset does not exist, an iterator is returned indicating where to insert a preset with the same name.
     std::deque<Preset>::iterator find_preset_internal(const std::string &name, bool from_orca_lib_only = false)
     {
-        auto it = Slic3r::lower_bound_by_predicate(m_presets.begin() + m_num_default_presets, m_presets.end(), [&name](const auto& l) { return l.name < name;  });
+        auto it = Slic3r::lower_bound_by_predicate(m_presets.begin() + m_num_default_presets, m_presets.end(),
+            [&name, this](const auto& l) {
+                if (m_type == Preset::TYPE_FILAMENT) {
+                    bool l_generic = boost::starts_with(l.name, GENERIC_PREFIX);
+                    bool name_generic = boost::starts_with(name, GENERIC_PREFIX);
+                    if (l_generic && !name_generic) return true;
+                    if (!l_generic && name_generic) return false;
+                }
+                return l.name < name;
+            });
         if (it == m_presets.end() || it->name != name) {
             // Preset has not been not found in the sorted list of non-default presets. Try the defaults.
             for (size_t i = 0; i < m_num_default_presets; ++ i)

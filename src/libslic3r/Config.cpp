@@ -318,6 +318,24 @@ ConfigOption* ConfigOptionDef::create_default_option() const
     return this->create_empty_option();
 }
 
+bool ConfigOptionDef::is_value_valid(const double value, const int max_precision /*= 4*/) const
+{
+    // Special handling for the nil values
+    // The nil value is a valid one only for nullable options
+    if (std::isnan(value))
+        return this->nullable;
+
+    // Special handling of 0
+    if (this->min == 0.f && value < 0)
+        return false;
+
+    const double ep = std::pow(0.1, max_precision);
+    if (is_approx(value, (double) this->min, ep) || is_approx(value, (double) this->max, ep))
+        return true;
+
+    return this->min <= value && value <= this->max;
+}
+
 // Assignment of the serialization IDs is not thread safe. The Defs shall be initialized from the main thread!
 ConfigOptionDef* ConfigDef::add(const t_config_option_key &opt_key, ConfigOptionType type)
 {
@@ -902,6 +920,12 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
                 key_values.emplace(BBL_JSON_KEY_INHERITS, it.value());
             } else if (boost::iequals(it.key(), ORCA_JSON_KEY_RENAMED_FROM)) {
                 key_values.emplace(ORCA_JSON_KEY_RENAMED_FROM, it.value());
+            } else if (boost::iequals(it.key(), "fhub_source")) {
+                // EXPORT-1 fix: сохраняем fhub_source в key_values для распознавания FilamentHub пресетов
+                key_values.emplace("fhub_source", it.value());
+            } else if (boost::iequals(it.key(), "fhub_id")) {
+                // EXPORT-1 fix: сохраняем fhub_id в key_values для идентификации FilamentHub пресетов
+                key_values.emplace("fhub_id", it.value());
             } else {
                 t_config_option_key opt_key = it.key();
                 std::string value_str;
@@ -1443,7 +1467,8 @@ ConfigSubstitutions ConfigBase::load_from_gcode_file(const std::string &file, Fo
 }
 
 //BBS: add json support
-void ConfigBase::save_to_json(const std::string &file, const std::string &name, const std::string &from, const std::string &version) const
+void ConfigBase::save_to_json(const std::string &file, const std::string &name, const std::string &from, const std::string &version,
+                              const std::map<std::string, std::string> &extra_kv) const
 {
     json j;
     //record the headers
@@ -1477,6 +1502,10 @@ void ConfigBase::save_to_json(const std::string &file, const std::string &name, 
             j[opt_key] = j_array;
         }
     }
+
+    // Append extra key-value pairs (e.g. FilamentHub metadata)
+    for (const auto &kv : extra_kv)
+        j[kv.first] = kv.second;
 
     boost::nowide::ofstream c;
     c.open(file, std::ios::out | std::ios::trunc);

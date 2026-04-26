@@ -1134,6 +1134,8 @@ void PlaterPresetComboBox::update()
     std::map<wxString, wxBitmap*> nonsys_presets;
     //BBS: add project embedded presets logic
     std::map<wxString, wxBitmap*>  project_embedded_presets;
+    // FilamentHub: separate section for cloud-synced presets
+    std::map<wxString, wxBitmap*>  filamenthub_presets;
     std::map<wxString, wxBitmap *> system_presets;
     std::map<wxString, wxBitmap *>  uncompatible_presets;
     std::unordered_set<std::string> system_printer_models;
@@ -1235,6 +1237,15 @@ void PlaterPresetComboBox::update()
             if (is_selected) {
                 selected_user_preset = name;
                 tooltip = wxString::FromUTF8(preset.name.c_str());
+            }
+        }
+        // FilamentHub: separate section for cloud-synced presets
+        else if (preset.is_filamenthub_preset())
+        {
+            filamenthub_presets.emplace(name, bmp);
+            if (is_selected) {
+                selected_user_preset = name;
+                tooltip = get_tooltip(preset);
             }
         }
         else
@@ -1344,6 +1355,8 @@ void PlaterPresetComboBox::update()
 
     //BBS: add project embedded preset logic
     add_presets(project_embedded_presets, selected_user_preset, L("Project-inside presets"), _L("Project") + " ");
+    // FilamentHub: cloud-synced presets in separate section
+    add_presets(filamenthub_presets, selected_user_preset, L("FilamentHub presets"), _L("FilamentHub") + " ");
     // ORCA add sorting support for vendor / type for user presets
     auto group_filament_presets    = wxGetApp().app_config->get("group_filament_presets");
     auto group_filament_presets_by = group_filament_presets  == "0" ? (_L("Custom") + " ") // Append all to "Custom" sub menu

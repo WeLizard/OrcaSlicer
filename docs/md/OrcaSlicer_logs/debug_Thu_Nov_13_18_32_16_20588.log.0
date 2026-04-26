@@ -1,0 +1,66 @@
+[warning]	2025-11-13 18:32:18.364079[Thread 0x00002504]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_model_id_from_desgin_id
+[warning]	2025-11-13 18:32:18.366839[Thread 0x00002504]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_profile_3mf
+[error]	2025-11-13 18:32:22.847296[Thread 0x00002504]:Slic3r::GUI::PartPlate::calc_exclude_triangles:Unable to create exclude triangles
+[error]	2025-11-13 18:32:22.852297[Thread 0x00002504]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg
+[error]	2025-11-13 18:32:22.866297[Thread 0x00001f54]:Unable to open the fileC:\Users\Lizard\Desktop\2124124v.STL
+[error]	2025-11-13 18:32:22.867297[Thread 0x00001c80]:Unable to open the fileC:\Users\Lizard\Desktop\geek.stl
+[error]	2025-11-13 18:32:22.866297[Thread 0x00003a54]:Unable to open the fileF:\Ilya\VENOM\venomNewbot.stl
+[error]	2025-11-13 18:32:22.867297[Thread 0x00003eec]:Unable to open the fileC:\Users\Lizard\Downloads\Профиль.3mf
+[error]	2025-11-13 18:32:22.867297[Thread 0x00001dfc]:Unable to open the fileC:\Users\Lizard\Desktop\123titled.stl
+[error]	2025-11-13 18:32:22.867297[Thread 0x00003758]:Unable to open the fileC:\Users\Lizard\Downloads\Case.3mf
+[error]	2025-11-13 18:32:22.867297[Thread 0x00000e80]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi.3mf
+[error]	2025-11-13 18:32:22.867297[Thread 0x00001010]:Unable to open the fileC:\Users\Lizard\Downloads\Pico4洞洞板支架_stls\PICO手柄支架.3mf
+[error]	2025-11-13 18:32:22.867297[Thread 0x000025cc]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi.stl
+[error]	2025-11-13 18:32:22.867297[Thread 0x00001c78]:Unable to open the fileC:\Users\Lizard\Downloads\untitled.stl
+[error]	2025-11-13 18:32:22.867297[Thread 0x00004480]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi\Miyabi.3mf
+[error]	2025-11-13 18:32:22.867297[Thread 0x00004eb8]:Unable to open the fileC:\Users\Lizard\Downloads\Trashbag Holder - 6043568\Trashbag_Holder.stl
+[error]	2025-11-13 18:32:22.867297[Thread 0x00004dbc]:Unable to open the fileC:\Users\Lizard\Downloads\winchrack\WinchRack_custom\Нью печать\Красный ролик ведущий.3mf
+[error]	2025-11-13 18:32:22.867297[Thread 0x00001ce4]:Unable to open the fileC:\Users\Lizard\Downloads\Miyabi\Lhand.stl
+[error]	2025-11-13 18:32:23.061295[Thread 0x00002504]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg
+[error]	2025-11-13 18:32:25.169821[Thread 0x00002504]:Slic3r::GUI::PartPlate::calc_exclude_triangles:Unable to create exclude triangles
+[error]	2025-11-13 18:32:25.229820[Thread 0x00002504]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg
+[error]	2025-11-13 18:32:26.918628[Thread 0x00002fe8]:[install_plugin]: 1385, got 7 files
+[warning]	2025-11-13 18:32:27.351626[Thread 0x00002504]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_model_id_from_desgin_id
+[warning]	2025-11-13 18:32:27.351626[Thread 0x00002504]:Slic3r::NetworkAgent::get_network_function, can not find function bambu_network_get_profile_3mf
+[error]	2025-11-13 18:32:27.439386[Thread 0x00002504]:can not find parent for config C:\Users\Lizard\AppData\Roaming\OrcaSlicer\user\2136879404\process\0.20mm Standard @Creality Ender3V2 - Копировать.json!
+[warning]	2025-11-13 18:32:43.425800[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset 0.20mm Standard @BBL X1C - Копия, just skip
+[warning]	2025-11-13 18:32:43.425800[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset 0.20mm Standard @Creality Ender3V2 - Копировать, just skip
+[warning]	2025-11-13 18:32:43.425800[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset ABS (НИТ), just skip
+[warning]	2025-11-13 18:32:43.425800[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset ABS-5 (HTP), just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset CARBEX LARETC, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset CarbeX, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset Creality Generic PETG , just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset ERYONE - PLA Silk, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset FDPlast - ABS, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset FLEX HARD, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset FormaX, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset HTP - ABS-5, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset HTP - ABS-6, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset HTP - PET.htp, just skip
+[warning]	2025-11-13 18:32:43.426798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset HTP - PETG Black, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset HTP - PETG Gold, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset HTP - PETG Silver, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset Kingroon TPU Black, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset NYLON LARETC, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset NYLON MOD LARETC, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PA66 GF-30, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PET-Gun Transparent, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PET.htp, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PET.htp (HTP), just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PETG (Syntech), just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PETG Transparrent LARETC, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PETG h.t.p, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PETG h.t.p., just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PETG-1 (HTP), just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PETG-3 (HTP), just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PLA ERYONE, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PP LARETC, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset PritProduct - PETG Transparent, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset TOTAL GF-10, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset TOTAL GF-30, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset Voron Generic TPU - Копировать, just skip
+[warning]	2025-11-13 18:32:43.427798[Thread 0x00002504]:Slic3r::PresetCollection::load_user_preset, can not find inherit preset for user preset НИТ - PETG Transparent, just skip
+[error]	2025-11-13 18:52:30.145187[Thread 0x00002504]:Slic3r::NetworkAgent::connect_server error: network_agent=000001AFD4447D40, ret=-2
+[warning]	2025-11-13 18:52:30.677266[Thread 0x00003100]:[Orca Updater]: online version=1.10.1.9, current_version=1.10.1.9, no need to download
+[error]	2025-11-13 18:52:31.087380[Thread 0x00002504]:Slic3r::GUI::PartPlate::calc_exclude_triangles:Unable to create exclude triangles
+[error]	2025-11-13 18:52:31.152394[Thread 0x00002504]:Unable to load bed texture: C:\Program Files\OrcaSlicer\resources/profiles/Voron/voron_logo.svg

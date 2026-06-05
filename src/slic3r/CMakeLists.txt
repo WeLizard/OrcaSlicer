@@ -648,6 +648,7 @@ set(SLIC3R_GUI_SOURCES
     Utils/SimplyPrint.hpp
     Utils/FilamentHubClient.cpp
     Utils/FilamentHubClient.hpp
+    Utils/FilamentHubBundleId.hpp
     Utils/TCPConsole.cpp
     Utils/TCPConsole.hpp
     Utils/UndoRedo.cpp

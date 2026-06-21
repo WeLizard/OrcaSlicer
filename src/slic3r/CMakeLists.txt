@@ -56,6 +56,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/BitmapComboBox.hpp
     GUI/BonjourDialog.cpp
     GUI/BonjourDialog.hpp
+    GUI/CrealityDiscoveryDialog.cpp
+    GUI/CrealityDiscoveryDialog.hpp
     GUI/calib_dlg.cpp
     GUI/calib_dlg.hpp
     GUI/Calibration.cpp
@@ -460,6 +462,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/TextLines.hpp
     GUI/TickCode.cpp
     GUI/TickCode.hpp
+    GUI/TroubleshootDialog.cpp
+    GUI/TroubleshootDialog.hpp
     GUI/UnsavedChangesDialog.cpp
     GUI/UnsavedChangesDialog.hpp
     GUI/UpdateDialogs.cpp
@@ -572,6 +576,10 @@ set(SLIC3R_GUI_SOURCES
     Utils/ColorSpaceConvert.hpp
     Utils/CrealityPrint.cpp
     Utils/CrealityPrint.hpp
+    Utils/CrealityPrintAgent.cpp
+    Utils/CrealityPrintAgent.hpp
+    Utils/CrealityHostDiscovery.cpp
+    Utils/CrealityHostDiscovery.hpp
     Utils/Duet.cpp
     Utils/Duet.hpp
     Utils/ElegooLink.cpp
@@ -618,6 +626,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/SnapmakerPrinterAgent.hpp
     Utils/MoonrakerPrinterAgent.cpp
     Utils/MoonrakerPrinterAgent.hpp
+    Utils/Moonraker.cpp
+    Utils/Moonraker.hpp
     Utils/BBLCloudServiceAgent.cpp
     Utils/BBLCloudServiceAgent.hpp
     Utils/BBLPrinterAgent.cpp
@@ -744,7 +754,7 @@ else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html GLEW::GLEW OpenGL::GL hidapi ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise nlohmann_json)
+target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise nlohmann_json)
 
 if (MSVC)
     target_link_libraries(libslic3r_gui Setupapi.lib)

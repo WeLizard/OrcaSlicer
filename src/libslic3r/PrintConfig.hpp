@@ -77,7 +77,7 @@ enum class WipeTowerType {
 };
 
 enum PrintHostType {
-    htPrusaLink, htPrusaConnect, htOctoPrint, htDuet, htFlashAir, htAstroBox, htRepetier, htMKS, htESP3D, htCrealityPrint, htObico, htFlashforge, htSimplyPrint, htElegooLink, ht3DPrinterOS
+    htPrusaLink, htPrusaConnect, htOctoPrint, htDuet, htFlashAir, htAstroBox, htRepetier, htMKS, htESP3D, htCrealityPrint, htObico, htFlashforge, htSimplyPrint, htElegooLink, ht3DPrinterOS, htMoonraker
 };
 
 enum AuthorizationType {
@@ -1467,6 +1467,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                enable_filament_ramming))
     ((ConfigOptionBool,                tool_change_on_wipe_tower))
     ((ConfigOptionBool,                support_multi_bed_types))
+    ((ConfigOptionBool,                use_3mf))
 
     // Small Area Infill Flow Compensation
     ((ConfigOptionStrings,              small_area_infill_flow_compensation_model))

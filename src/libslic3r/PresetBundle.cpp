@@ -1064,6 +1064,43 @@ PresetsConfigSubstitutions PresetBundle::load_user_presets(std::string user, For
     return PresetsConfigSubstitutions();
 }
 
+PresetsConfigSubstitutions PresetBundle::reload_filament_presets_only(const std::string& user)
+{
+    PresetsConfigSubstitutions substitutions;
+    fs::path    user_folder(data_dir() + "/" + PRESET_USER_DIR);
+    fs::path    folder(user_folder / user);
+    const std::string dir_user_presets = folder.string();
+
+    // Append-only: the loader skips presets already in memory, so existing presets
+    // and the current selection are untouched (no reset). Surfaces newly added
+    // filament presets live; edits/removals are handled elsewhere.
+    auto load_bundle_filaments = [&](const fs::path& root, PresetOrigin::Kind kind) {
+        if (!fs::exists(root)) return;
+        for (auto& entry : fs::directory_iterator(root)) {
+            if (!fs::is_directory(entry.path())) continue;
+            fs::path metadata_file = entry.path() / PRESET_BUNDLE_METADATA;
+            if (!fs::exists(metadata_file)) continue;
+            BundleMetadata metadata;
+            if (!metadata.load_from_json(metadata_file.string())) continue;
+            try {
+                this->filaments.load_presets(entry.path().string(), PRESET_FILAMENT_NAME,
+                    substitutions, ForwardCompatibilitySubstitutionRule::Enable, nullptr,
+                    PresetOrigin(kind, metadata.id));
+            } catch (const std::runtime_error&) {}
+        }
+    };
+    load_bundle_filaments(folder / PRESET_LOCAL_DIR,      PresetOrigin::Kind::LocalBundle);
+    load_bundle_filaments(folder / PRESET_SUBSCRIBED_DIR, PresetOrigin::Kind::SubscribedBundle);
+
+    try {
+        this->filaments.load_presets(dir_user_presets, PRESET_FILAMENT_NAME, substitutions,
+                                     ForwardCompatibilitySubstitutionRule::Enable);
+    } catch (const std::runtime_error&) {}
+
+    this->update_compatible(PresetSelectCompatibleType::Never);
+    return substitutions;
+}
+
 PresetsConfigSubstitutions PresetBundle::load_user_presets(AppConfig &                                                config,
                                                            std::map<std::string, std::map<std::string, std::string>> &my_presets,
                                                            ForwardCompatibilitySubstitutionRule                       substitution_rule)

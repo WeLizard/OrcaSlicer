@@ -192,6 +192,12 @@ public:
 
     // BBS Load user presets
     PresetsConfigSubstitutions load_user_presets(std::string user, ForwardCompatibilitySubstitutionRule rule);
+
+    // Reload ONLY the filament presets (flat user dir + _local/_subscribed bundle
+    // filament subfolders) for the given user, leaving the print and printer
+    // collections and their selection untouched. Used for a plugin's live filament
+    // sync so a Prepare-tab printer/process selection is never disturbed.
+    PresetsConfigSubstitutions reload_filament_presets_only(const std::string& user);
     PresetsConfigSubstitutions load_user_presets(AppConfig &config, std::map<std::string, std::map<std::string, std::string>>& my_presets, ForwardCompatibilitySubstitutionRule rule);
     // Orca: Import subscribed bundle presets (load and save to disk in one operation), handles one bundle at a time
     PresetsConfigSubstitutions update_subscribed_presets(AppConfig& config,

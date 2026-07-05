@@ -1,6 +1,7 @@
 #include "PluginHostApi.hpp"
 #include "PluginHostUi.hpp"
 
+#include <libslic3r/AppConfig.hpp>
 #include <libslic3r/BoundingBox.hpp>
 #include <libslic3r/Model.hpp>
 #include <libslic3r/Preset.hpp>
@@ -12,7 +13,11 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <wx/thread.h>
+
 #include <cstdint>
+#include <functional>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -44,6 +49,64 @@ PresetBundle* current_preset_bundle()
         throw std::runtime_error("Preset bundle is not available");
 
     return preset_bundle;
+}
+
+// Run fn on the wx main thread and block until it returns — plugins call from
+// worker threads, but preset/UI mutation must happen on the UI thread.
+void run_on_ui_blocking(const std::function<void()>& fn)
+{
+    if (wxIsMainThread()) {
+        fn();
+        return;
+    }
+    std::promise<void> prom;
+    std::future<void>  fut = prom.get_future();
+    GUI::wxGetApp().CallAfter([&prom, &fn]() {
+        try {
+            fn();
+            prom.set_value();
+        } catch (...) {
+            prom.set_exception(std::current_exception());
+        }
+    });
+    fut.get();
+}
+
+// Append newly written filament presets and refresh the filament combos, so an
+// imported preset shows without a restart. Host-mediated: the plugin never
+// touches the preset bundle itself.
+void reload_user_presets()
+{
+    run_on_ui_blocking([]() {
+        GUI::GUI_App& app = GUI::wxGetApp();
+        if (app.preset_bundle == nullptr || app.app_config == nullptr)
+            throw std::runtime_error("Preset bundle is not available");
+        std::string user = app.app_config->get("preset_folder");
+        if (user.empty())
+            user = DEFAULT_USER_FOLDER_NAME;
+        // Filament-only refresh via the per-type path used after Save; not
+        // load_current_presets(), which re-selects the printer and blanks Prepare.
+        app.preset_bundle->reload_filament_presets_only(user);
+        if (app.plater() != nullptr)
+            app.plater()->sidebar().update_presets(Preset::TYPE_FILAMENT);
+    });
+}
+
+// Remove one filament preset by canonical name — the same targeted delete_preset
+// the Delete button uses (force=true for a bundle preset). No reset. Returns true
+// if a preset was removed.
+bool remove_filament_preset(const std::string& name)
+{
+    bool removed = false;
+    run_on_ui_blocking([&]() {
+        GUI::GUI_App& app = GUI::wxGetApp();
+        if (app.preset_bundle == nullptr)
+            return;
+        removed = app.preset_bundle->filaments.delete_preset(name, true);
+        if (removed && app.plater() != nullptr)
+            app.plater()->sidebar().update_presets(Preset::TYPE_FILAMENT);
+    });
+    return removed;
 }
 
 py::object config_value_or_none(const DynamicPrintConfig& config, const std::string& key)
@@ -527,6 +590,15 @@ void PluginHostApi::RegisterBindings(pybind11::module_& module)
         return current_plater()->model();
     }, py::return_value_policy::reference);
     host.def("preset_bundle", &current_preset_bundle, py::return_value_policy::reference);
+
+    // Presets: host-mediated live add/remove of filament presets a plugin writes.
+    py::module_ presets = host.def_submodule("presets");
+    presets.def("reload_filaments", &reload_user_presets,
+                "Load newly added filament preset files from disk and refresh the "
+                "filament combos, without touching the printer/process selection.");
+    presets.def("remove_filament", &remove_filament_preset, py::arg("name"),
+                "Remove one filament preset by name and refresh the filament combos "
+                "(the same targeted delete OrcaSlicer uses for its Delete button).");
 
     // UI: native dialogs and interactive HTML windows for plugins.
     PluginHostUi::RegisterBindings(host);

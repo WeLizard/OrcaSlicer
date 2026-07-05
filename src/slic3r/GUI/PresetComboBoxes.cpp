@@ -1,6 +1,7 @@
 #include "PresetComboBoxes.hpp"
 
 #include <cstddef>
+#include <cctype>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -1147,6 +1148,10 @@ void PlaterPresetComboBox::update()
     std::map<wxString, wxBitmap*>  project_embedded_presets;
     // ORCA: add bundle presets
     std::map<wxString, wxBitmap*> bundle_presets;
+    // Plugin-provided presets: a preset a plugin imported carries a namespaced
+    // bundle_id "<provider>:<id>" (the plugin tags it — the host does not hardcode
+    // any provider). Each provider gets its own dropdown group, keyed by provider.
+    std::map<std::string, std::map<wxString, wxBitmap*>> provider_presets;
     std::map<wxString, wxBitmap *> system_presets;
     std::map<wxString, wxBitmap *>  uncompatible_presets;
     std::unordered_set<std::string> system_printer_models;
@@ -1160,6 +1165,7 @@ void PlaterPresetComboBox::update()
     wxString selected_system_preset;
     wxString selected_user_preset;
     wxString selected_bundle_preset;
+    wxString selected_provider_preset;
     wxString tooltip;
     const std::deque<Preset>& presets = m_collection->get_presets();
 
@@ -1283,10 +1289,25 @@ void PlaterPresetComboBox::update()
         // ORCA: add bundle presets
         else if (preset.is_from_bundle())
         {
-            bundle_presets.emplace(name, bmp);
-            if (is_selected) {
-                selected_bundle_preset = name;
-                tooltip = get_tooltip(preset);
+            // A registered bundle resolves to a bundle name (looked up above) and
+            // goes to the generic "Bundle presets" group. A namespaced marker that
+            // is NOT a registered bundle ("<provider>:<id>", e.g. presets a plugin
+            // imported) gets its own per-provider group — the provider comes from
+            // the preset, so no provider name is hardcoded in the host.
+            const auto colon = preset.bundle_id.find(':');
+            const bool registered = preset_bundle_names.count(name) && !preset_bundle_names[name].empty();
+            if (!registered && colon != std::string::npos && colon > 0) {
+                provider_presets[preset.bundle_id.substr(0, colon)].emplace(name, bmp);
+                if (is_selected) {
+                    selected_provider_preset = name;
+                    tooltip = get_tooltip(preset);
+                }
+            } else {
+                bundle_presets.emplace(name, bmp);
+                if (is_selected) {
+                    selected_bundle_preset = name;
+                    tooltip = get_tooltip(preset);
+                }
             }
         }
         else
@@ -1406,6 +1427,15 @@ void PlaterPresetComboBox::update()
         }
     };
 
+    // Plugin-provided presets: one group per provider, shown first. The header is
+    // the provider taken from the preset's bundle_id (title-cased), so any plugin's
+    // presets group under its own name without the host hardcoding it.
+    for (auto& provider_group : provider_presets) {
+        std::string header = provider_group.first;
+        if (!header.empty())
+            header[0] = std::toupper(static_cast<unsigned char>(header[0]));
+        add_presets(provider_group.second, selected_provider_preset, header, wxString(""));
+    }
     //BBS: add project embedded preset logic
     add_presets(project_embedded_presets, selected_user_preset, L("Project-inside presets"), _L("Project") + " ");
     // ORCA add sorting support for vendor / type for user presets

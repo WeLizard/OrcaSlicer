@@ -8,6 +8,7 @@
 #include <slic3r/GUI/MsgDialog.hpp>
 #include <slic3r/GUI/PluginProgressDialog.hpp>
 #include <slic3r/GUI/PluginWebDialog.hpp>
+#include <slic3r/GUI/PluginWebPanel.hpp>
 
 #include <nlohmann/json.hpp>
 #include <pybind11/pybind11.h>
@@ -320,6 +321,11 @@ struct UiWindowHandle
     int id{0};
 };
 
+struct UiPanelHandle
+{
+    int id{0};
+};
+
 struct UiProgressHandle
 {
     int id{0};
@@ -365,14 +371,103 @@ py::object ui_create_window(const std::string& html, const std::string& title, i
     return py::cast(UiWindowHandle{id});
 }
 
+// --------------------------------------------------------------------------
+// orca.host.ui.create_panel — same content and messaging contract as
+// create_window, but the page is docked as a main-window tab (the "panel"
+// contribution type). The host renders and owns the tab; it is removed when
+// the plugin unloads (same close_windows_for_plugin teardown).
+//
+// A plugin may create a panel from on_load, which fires on a worker thread
+// while the main window is still being constructed at startup. To keep mounting
+// deterministic, a panel requested before the main window exists is queued with
+// its reserved id and docked by flush_pending_panels() once the window is ready.
+// --------------------------------------------------------------------------
+struct PendingPanel
+{
+    int                                id;
+    std::string                        html;
+    std::string                        title;
+    std::string                        icon;
+    std::string                        plugin_key;
+    GUI::PluginWebPanel::MessageHandler on_message;
+    GUI::PluginWebPanel::CloseHandler   on_close;
+};
+
+std::mutex&                g_pending_panels_mtx() { static std::mutex m; return m; }
+std::vector<PendingPanel>& g_pending_panels()     { static std::vector<PendingPanel> v; return v; }
+
+// Dock a panel now. MAIN-THREAD ONLY, and the main window must exist. Returns
+// false (and unregisters the reserved id) if docking fails.
+bool dock_pending_panel(PendingPanel&& p)
+{
+    GUI::MainFrame* mainframe = GUI::wxGetApp().mainframe;
+    if (mainframe == nullptr || mainframe->plugin_page_parent() == nullptr) {
+        UiRegistry::instance().remove(p.id);
+        return false;
+    }
+    const int id = p.id;
+    auto on_destroyed = [id]() { UiRegistry::instance().remove(id); };
+    auto* panel = new GUI::PluginWebPanel(mainframe->plugin_page_parent(), p.html,
+                                          std::move(p.on_message), std::move(p.on_close),
+                                          std::move(on_destroyed));
+    if (!mainframe->add_plugin_page(panel, wxString::FromUTF8(p.title), p.icon)) {
+        panel->Destroy();
+        UiRegistry::instance().remove(id);
+        return false;
+    }
+    UiRegistry::instance().bind(id, panel, p.plugin_key);
+    return true;
+}
+
+py::object ui_create_panel(const std::string& html, const std::string& title,
+                           py::object on_message, py::object on_close, const std::string& icon)
+{
+    auto              msg_adapter  = make_message_adapter(std::move(on_message));
+    CallablePtr       close_holder = make_holder(std::move(on_close));
+    const std::string plugin_key   = PluginAuditManager::instance().current_plugin();
+
+    GUI::PluginWebPanel::CloseHandler on_close_cb;
+    if (close_holder) {
+        on_close_cb = [close_holder]() {
+            PythonGILState gil;
+            try {
+                close_holder->fn();
+            } catch (py::error_already_set& e) {
+                BOOST_LOG_TRIVIAL(error) << "orca.host.ui on_close handler raised: " << e.what();
+                PyErr_Clear();
+            }
+        };
+    }
+
+    const int id = run_on_ui_blocking([&]() -> int {
+        const int new_id = UiRegistry::instance().reserve_id();
+        PendingPanel p{new_id, html, title, icon, plugin_key, std::move(msg_adapter), std::move(on_close_cb)};
+
+        GUI::MainFrame* mainframe = GUI::wxGetApp().mainframe;
+        if (mainframe != nullptr && mainframe->plugin_page_parent() != nullptr) {
+            dock_pending_panel(std::move(p)); // window ready — dock immediately
+        } else {
+            // Window not built yet (startup on_load): queue for flush_pending_panels().
+            std::lock_guard<std::mutex> lk(g_pending_panels_mtx());
+            g_pending_panels().push_back(std::move(p));
+        }
+        return new_id;
+    });
+
+    return py::cast(UiPanelHandle{id});
+}
+
 void handle_post(int id, py::object data)
 {
     if (wxTheApp == nullptr)
         return;
     json j = py_to_json(data); // GIL held (binding body)
     GUI::wxGetApp().CallAfter([id, j = std::move(j)]() {
-        auto* d = UiRegistry::instance().get_as<GUI::PluginWebDialog>(id);
-        GUI::PluginWebDialog::post_message(d, j);
+        if (auto* d = UiRegistry::instance().get_as<GUI::PluginWebDialog>(id)) {
+            GUI::PluginWebDialog::post_message(d, j);
+            return;
+        }
+        GUI::PluginWebPanel::post_message(UiRegistry::instance().get_as<GUI::PluginWebPanel>(id), j);
     });
 }
 
@@ -381,8 +476,11 @@ void handle_close(int id)
     if (wxTheApp == nullptr)
         return;
     GUI::wxGetApp().CallAfter([id]() {
-        auto* d = UiRegistry::instance().get_as<GUI::PluginWebDialog>(id);
-        GUI::PluginWebDialog::request_close(d);
+        if (auto* d = UiRegistry::instance().get_as<GUI::PluginWebDialog>(id)) {
+            GUI::PluginWebDialog::request_close(d);
+            return;
+        }
+        GUI::PluginWebPanel::request_close(UiRegistry::instance().get_as<GUI::PluginWebPanel>(id));
     });
 }
 
@@ -501,6 +599,24 @@ void PluginHostUi::RegisterBindings(pybind11::module_& host)
            "the UI thread when the page posts; offload heavy work to a thread and push results back with "
            "window.post().");
 
+    py::class_<UiPanelHandle>(ui, "UiPanel", "Handle to a plugin page docked as a main-window tab by create_panel().")
+        .def_property_readonly("id", [](const UiPanelHandle& h) { return h.id; })
+        .def(
+            "post", [](const UiPanelHandle& h, py::object data) { handle_post(h.id, std::move(data)); },
+            py::arg("data"), "Send a payload to the page (delivered to window.orca.onMessage handlers).")
+        .def(
+            "close", [](const UiPanelHandle& h) { handle_close(h.id); },
+            "Undock and close the panel (fires on_close).")
+        .def(
+            "is_open", [](const UiPanelHandle& h) { return UiRegistry::instance().is_open(h.id); },
+            "Return True while the panel is docked.");
+
+    ui.def("create_panel", &ui_create_panel, py::arg("html"), py::arg("title") = "OrcaSlicer",
+           py::arg("on_message") = py::none(), py::arg("on_close") = py::none(), py::arg("icon") = "",
+           "Dock a persistent HTML page as a main-window tab and return a UiPanel. Same content pipeline "
+           "and messaging contract as create_window; the host renders and owns the tab, and it is torn "
+           "down automatically when the plugin unloads. icon is a bundled tab-icon resource name.");
+
     py::class_<UiProgressHandle>(ui, "ProgressDialog", "Handle to a native progress dialog.")
         .def(py::init(&new_progress_dialog), py::arg("title"), py::arg("message"), py::arg("maximum") = 100,
              py::arg("style") = wxPD_APP_MODAL | wxPD_AUTO_HIDE)
@@ -557,6 +673,19 @@ void PluginHostUi::close_windows_for_plugin(const std::string& plugin_key)
         teardown();
     else
         GUI::wxGetApp().CallAfter(teardown);
+}
+
+void PluginHostUi::flush_pending_panels()
+{
+    // Called once the main window is ready. Dock every panel that a plugin
+    // requested (from on_load) before the window existed. MAIN-THREAD ONLY.
+    std::vector<PendingPanel> pending;
+    {
+        std::lock_guard<std::mutex> lk(g_pending_panels_mtx());
+        pending.swap(g_pending_panels());
+    }
+    for (auto& p : pending)
+        dock_pending_panel(std::move(p));
 }
 
 } // namespace Slic3r

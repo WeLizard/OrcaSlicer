@@ -62,6 +62,10 @@ public:
 
     void SetIcon(const wxString& icon);
 
+    // Set the icon from an external file path (plugin-supplied SVG/PNG) instead
+    // of a bundled resource name. Returns false if the file could not be loaded.
+    bool SetIconFromFile(const wxString& path);
+
     void SetInactiveIcon(const wxString& icon);
 
     void SetMinSize(const wxSize& size) override;

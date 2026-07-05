@@ -169,6 +169,11 @@ public:
 
     ~ScalableBitmap() {}
 
+    // Load the bitmap from an external file (SVG or raster) instead of a bundled
+    // resource name — used for plugin-supplied tab icons. DPI rescale re-renders
+    // from the stored bundle. Returns false if the file could not be loaded.
+    bool    load_from_file(const wxString& path, wxWindow* parent, int px_cnt = 16);
+
     wxSize  GetBmpSize() const;
     static wxSize GetBmpSize(const wxBitmap &bmp);
 
@@ -190,6 +195,10 @@ private:
     int             m_px_cnt {16};
     bool            m_grayscale{ false };
     bool            m_resize{ false };
+    // Set when the bitmap comes from an external file (plugin-supplied icon);
+    // re-rasterized from this path on DPI rescale.
+    wxString        m_file_path;
+    bool            m_from_file{ false };
 };
 
 

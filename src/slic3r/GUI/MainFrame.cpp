@@ -1476,6 +1476,46 @@ void MainFrame::fit_tab_labels()
     }
 }
 
+wxWindow* MainFrame::plugin_page_parent() const
+{
+    return m_tabpanel;
+}
+
+bool MainFrame::add_plugin_page(wxWindow* page, const wxString& title, const std::string& icon)
+{
+    if (m_tabpanel == nullptr || page == nullptr || page->GetParent() != m_tabpanel)
+        return false;
+    if (m_tabpanel->FindPage(page) != wxNOT_FOUND)
+        return true;
+    // Start with the generic auxiliary-tab glyph so there is always an icon.
+    if (!m_tabpanel->AddPage(page, title, std::string("tab_auxiliary_active"),
+                             std::string("tab_auxiliary_active"), true))
+        return false;
+    // icon is an absolute path to a plugin-supplied SVG/raster file; the plugin
+    // ships it in its own directory, nothing is baked into the app resources.
+    if (!icon.empty()) {
+        const int idx = m_tabpanel->FindPage(page);
+        if (idx != wxNOT_FOUND)
+            m_tabpanel->SetPageImageFromFile(static_cast<size_t>(idx), wxString::FromUTF8(icon));
+    }
+    fit_tab_labels();
+    return true;
+}
+
+void MainFrame::remove_plugin_page(wxWindow* page)
+{
+    if (m_tabpanel == nullptr || page == nullptr)
+        return;
+    const int idx = m_tabpanel->FindPage(page);
+    if (idx == wxNOT_FOUND)
+        return;
+    // Leave the selection on a built-in tab before the page vanishes.
+    if (m_tabpanel->GetSelection() == idx)
+        m_tabpanel->SetSelection(tp3DEditor);
+    m_tabpanel->RemovePage(static_cast<size_t>(idx));
+    fit_tab_labels();
+}
+
 bool MainFrame::preview_only_hint()
 {
     if (m_plater && (m_plater->only_gcode_mode() || (m_plater->using_exported_file()))) {

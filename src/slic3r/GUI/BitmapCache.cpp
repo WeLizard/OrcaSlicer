@@ -399,6 +399,42 @@ wxBitmap* BitmapCache::load_svg(const std::string &bitmap_name, unsigned target_
     return this->insert_raw_rgba(bitmap_key, width, height, data.data(), grayscale);
 }
 
+wxBitmap BitmapCache::load_svg_from_path(const std::string &abs_path, unsigned target_width, unsigned target_height)
+{
+    std::map<std::string, std::string> no_replaces;
+    NSVGimage *image = nsvgParseFromFileWithReplace(abs_path.c_str(), "px", 96.0f, no_replaces);
+    if (image == nullptr)
+        return wxNullBitmap;
+
+    if (target_height == 0 && target_width == 0)
+        target_height = (unsigned) image->height;
+
+    const float svg_scale = target_height != 0 ? (float) target_height / image->height
+                          : target_width  != 0 ? (float) target_width / image->width
+                                               : 1.f;
+    const int width    = (int) (svg_scale * image->width + 0.5f);
+    const int height   = (int) (svg_scale * image->height + 0.5f);
+    const int n_pixels = width * height;
+    if (n_pixels <= 0) {
+        ::nsvgDelete(image);
+        return wxNullBitmap;
+    }
+
+    NSVGrasterizer *rast = ::nsvgCreateRasterizer();
+    if (rast == nullptr) {
+        ::nsvgDelete(image);
+        return wxNullBitmap;
+    }
+    std::vector<unsigned char> data(n_pixels * 4, 0);
+    ::nsvgRasterize(rast, image, 0, 0, svg_scale, data.data(), width, height, width * 4);
+    ::nsvgDeleteRasterizer(rast);
+    ::nsvgDelete(image);
+
+    wxBitmap* bmp = this->insert_raw_rgba("__plugin_icon__" + abs_path + "@" + std::to_string(width) + "x" + std::to_string(height),
+                                          width, height, data.data(), false);
+    return bmp != nullptr ? *bmp : wxNullBitmap;
+}
+
 wxBitmap* BitmapCache::load_svg2(const std::string& bitmap_name, unsigned target_width, unsigned target_height,
     const bool grayscale/* = false*/, const bool dark_mode/* = false*/, const std::vector<std::string>& array_new_color /*= vector<std::string>()*/, const float scale_in_center/* = 0*/)
 {

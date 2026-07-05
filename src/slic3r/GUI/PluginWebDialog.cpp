@@ -1,5 +1,6 @@
 #include "PluginWebDialog.hpp"
 
+#include "PluginWebSurface.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Widgets/StateColor.hpp"
@@ -80,6 +81,11 @@ std::string host_theme_style()
     return s;
 }
 
+} // namespace
+
+// Shared with PluginWebPanel (declared in PluginWebSurface.hpp).
+namespace plugin_web {
+
 // User script that prepends the host theme into the document, before the plugin's
 // own <style>/scripts affect layout (and before first paint). Works whether the
 // plugin page has a <head> or is a bare fragment.
@@ -139,6 +145,8 @@ constexpr char ORCA_BRIDGE_JS[] = R"JS(
 })();
 )JS";
 
+const char* bridge_js() { return ORCA_BRIDGE_JS; }
+
 // file:// base URL for plugin HTML loaded via SetPage, so self-referencing
 // relative URLs resolve against the bundled web resources directory.
 wxString web_base_url()
@@ -147,7 +155,7 @@ wxString web_base_url()
     return wxString("file://") + from_u8(dir) + "/";
 }
 
-} // namespace
+} // namespace plugin_web
 
 PluginWebDialog::PluginWebDialog(wxWindow*          parent,
                                  const wxString&    title,
@@ -175,8 +183,8 @@ PluginWebDialog::PluginWebDialog(wxWindow*          parent,
         // Inject the host theme first so its <style> sits ahead of any plugin
         // CSS in the document (later same-specificity rules win), making the
         // plugin page match OrcaSlicer's light/dark theme by default.
-        wv->AddUserScript(wxString::FromUTF8(host_theme_user_script()));
-        wv->AddUserScript(wxString::FromUTF8(ORCA_BRIDGE_JS));
+        wv->AddUserScript(wxString::FromUTF8(plugin_web::host_theme_user_script()));
+        wv->AddUserScript(wxString::FromUTF8(plugin_web::bridge_js()));
         // Swap in the plugin HTML once the bootstrap page settles. Bind ERROR too so a
         // missing/blocked bootstrap resource (e.g. a packaged build) still triggers it.
         Bind(wxEVT_WEBVIEW_LOADED, &PluginWebDialog::on_bootstrap_event, this, wv->GetId());
@@ -252,7 +260,7 @@ void PluginWebDialog::load_plugin_content()
         return;
     m_content_loaded = true;
     if (wxWebView* wv = browser())
-        wv->SetPage(wxString::FromUTF8(m_html), web_base_url());
+        wv->SetPage(wxString::FromUTF8(m_html), plugin_web::web_base_url());
 }
 
 void PluginWebDialog::on_script_message(const nlohmann::json& payload)

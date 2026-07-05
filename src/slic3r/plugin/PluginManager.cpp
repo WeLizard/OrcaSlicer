@@ -6,6 +6,7 @@
 #include "PythonPluginBridge.hpp"
 #include "PluginFsUtils.hpp"
 #include "PythonFileUtils.hpp"
+#include "PluginHostUi.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <boost/filesystem.hpp>
@@ -128,6 +129,9 @@ bool PluginManager::initialize()
         m_loader.write_loaded_plugin_install_state(key);
     });
     m_loader.subscribe_on_unload_callback([this](const std::string& key) {
+        // Tear down any UI the plugin left open (windows and docked panels) so a
+        // disabled plugin leaves no orphaned tab behind.
+        PluginHostUi::close_windows_for_plugin(key);
         PluginDescriptor descriptor;
         if (!m_catalog.try_get_plugin_descriptor(key, descriptor) || descriptor.plugin_root.empty())
             return;

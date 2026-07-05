@@ -361,6 +361,15 @@ public:
     void show_device(bool bBBLPrinter);
     void fit_tab_labels(); // ORCA
 
+    // Plugin extension surface: dock/undock a plugin-owned page as a main tab.
+    // The host renders and owns the tab; plugins only supply the page window
+    // (see PluginWebPanel). Pages are appended after the built-in tabs.
+    // Defined in the .cpp: Notebook is only forward-declared here, so the
+    // upcast to wxWindow* needs the complete type.
+    wxWindow* plugin_page_parent() const;
+    bool      add_plugin_page(wxWindow* page, const wxString& title, const std::string& icon = "");
+    void      remove_plugin_page(wxWindow* page);
+
     PA_Calibration_Dlg* m_pa_calib_dlg{ nullptr };
     FlowRateCalibrationDialog* m_flow_rate_calib_dlg{ nullptr };
     Temp_Calibration_Dlg* m_temp_calib_dlg{ nullptr };

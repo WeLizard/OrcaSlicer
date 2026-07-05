@@ -26,6 +26,7 @@ public:
     bool InsertPage(size_t n, const wxString &text, bool bSelect = false, const std::string &bmp_name = "", const std::string &inactive_bmp_name = "");
     void RemovePage(size_t n);
     bool SetPageImage(size_t n, const std::string& bmp_name) const;
+    bool SetPageImageFromFile(size_t n, const wxString& path);
     void SetPageText(size_t n, const wxString& strText);
     void SetCompact(size_t n, bool compact); // ORCA
     wxString GetPageText(size_t n) const;
@@ -241,6 +242,12 @@ public:
     bool SetPageImage(size_t n, const std::string& bmp_name)
     {
         return GetBtnsListCtrl()->SetPageImage(n, bmp_name);
+    }
+
+    // Plugin-supplied tab icon loaded from an absolute file path (SVG/raster).
+    bool SetPageImageFromFile(size_t n, const wxString& path)
+    {
+        return GetBtnsListCtrl()->SetPageImageFromFile(n, path);
     }
 
     // Override some wxWindow methods too.

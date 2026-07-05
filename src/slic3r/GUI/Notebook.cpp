@@ -217,6 +217,16 @@ bool ButtonsListCtrl::SetPageImage(size_t n, const std::string& bmp_name) const
     return true;
 }
 
+bool ButtonsListCtrl::SetPageImageFromFile(size_t n, const wxString& path)
+{
+    if (n >= m_pageButtons.size())
+        return false;
+    const bool ok = m_pageButtons[n]->SetIconFromFile(path);
+    if (ok)
+        m_sizer->Layout();
+    return ok;
+}
+
 void ButtonsListCtrl::SetPageText(size_t n, const wxString& strText)
 {
     Button* btn = m_pageButtons[n];

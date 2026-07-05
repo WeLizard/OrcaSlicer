@@ -95,6 +95,20 @@ void Button::SetIcon(const wxString& icon)
     }
 }
 
+bool Button::SetIconFromFile(const wxString& path)
+{
+    // Plugin-supplied icon: load the same file for both active and inactive
+    // states from an external path (SVG or raster), not a bundled resource name.
+    const int px = this->active_icon.px_cnt();
+    ScalableBitmap active, inactive;
+    if (!active.load_from_file(path, this, px) || !inactive.load_from_file(path, this, px))
+        return false;
+    this->active_icon   = active;
+    this->inactive_icon = inactive;
+    Refresh();
+    return true;
+}
+
 void Button::SetInactiveIcon(const wxString &icon)
 {
     if (!icon.IsEmpty()) {

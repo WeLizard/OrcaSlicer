@@ -976,8 +976,32 @@ int ScalableBitmap::GetBmpHeight() const
 }
 
 
+bool ScalableBitmap::load_from_file(const wxString& path, wxWindow* parent, int px_cnt /* = 16 */)
+{
+    m_parent    = parent;
+    m_px_cnt    = px_cnt > 0 ? px_cnt : 16;
+    m_file_path = path;
+    m_from_file = true;
+    msw_rescale();
+    // If rasterization failed, m_bmp is not ok — report failure to the caller.
+    if (m_bmp.IsOk())
+        return true;
+    m_from_file = false;
+    return false;
+}
+
 void ScalableBitmap::msw_rescale()
 {
+    if (m_from_file && !m_file_path.IsEmpty()) {
+        // Same nanosvg pipeline the native icons use, but from an absolute path.
+        const int px = m_parent ? (int) (m_parent->FromDIP(m_px_cnt) + 0.5f) : m_px_cnt;
+        Slic3r::GUI::BitmapCache cache;
+        if (m_file_path.Lower().EndsWith(".svg"))
+            m_bmp = cache.load_svg_from_path(m_file_path.ToStdString(), px, px);
+        else
+            m_bmp = wxBitmap(wxImage(m_file_path).Scale(px, px, wxIMAGE_QUALITY_HIGH));
+        return;
+    }
     // BBS: support resize by fill border
     m_bmp = create_scaled_bitmap(m_icon_name, m_parent, m_px_cnt, m_grayscale, std::string(), false, m_resize);
 }

@@ -3249,6 +3249,9 @@ bool GUI_App::on_init_inner()
     }
     BOOST_LOG_TRIVIAL(info) << "create the main window";
     mainframe = new MainFrame();
+    // Dock any plugin panels requested from on_load before the window existed
+    // (enabled plugins auto-load above, before the main window is built).
+    CallAfter([] { Slic3r::PluginHostUi::flush_pending_panels(); });
     // hide settings tabs after first Layout
     if (is_editor()) {
         mainframe->select_tab(size_t(0));
